@@ -6,6 +6,7 @@ pub enum Token {
     Ident(Range),
     Punct(usize),
     Int(Range),
+    String(Range),
     Eof,
 }
 
@@ -33,6 +34,7 @@ impl<'a> Lexer<'a> {
         self.skip_whitespace();
 
         let tok = match self.ch {
+            b'"' => self.read_string(),
             _ if (self.ch as char).is_ascii_punctuation() => Token::Punct(self.position),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let range = self.read_ident();
@@ -89,8 +91,19 @@ impl<'a> Lexer<'a> {
 
         return (pos, self.position);
     }
+
+    fn read_string(&mut self) -> Token {
+        let pos = self.position + 1;
+        while self.peek() != b'"' && self.ch != 0 {
+            self.read_char();
+        }
+        self.read_char();
+        return Token::String((pos, self.position));
+    }
+
+
     fn str_from_range(&self, range: &Range) -> &str {
-        return std::str::from_utf8(&self.input[range.0..range.1]).unwrap();
+        return std::str::from_utf8(&self.input[range.0..range.1.min(self.input.len())]).unwrap();
     }
     pub fn print_token(&self, token: &Token) {
         match token {
@@ -103,6 +116,9 @@ impl<'a> Lexer<'a> {
             Token::Int(range) => {
                 println!("Int({})", self.str_from_range(range));
             },
+            Token::String(range) => {
+                println!("String(\"{}\")", self.str_from_range(range));
+            }
             Token::Eof => {
                 println!("Eof");
             }
@@ -160,5 +176,17 @@ mod tests {
         assert!(lex.next_token().unwrap() == Token::Punct(3));
         let range = lex.read_ident();
         assert!(lex.str_from_range(&range) == "bar");
+    }
+
+    #[test]
+    fn string() {
+        let contents = "\"foo\"";
+        let mut lex = Lexer::new(contents);
+        let tok = lex.next_token().unwrap();
+        let range = match tok {
+            Token::String(range) => range,
+            _ => unreachable!("expected string, got {:?}", tok)
+        };
+        assert_eq!(lex.str_from_range(&range), "foo");
     }
 }
