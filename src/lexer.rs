@@ -8,6 +8,8 @@ pub enum Token {
     Int(Range),
     Float(Range),
     String(Range),
+    True,
+    False,
     Eof,
 }
 
@@ -35,11 +37,11 @@ impl<'a> Lexer<'a> {
         self.skip_whitespace();
 
         let tok = match self.ch {
-            b'"' => self.read_string(),
-            _ if (self.ch as char).is_ascii_punctuation() => Token::Punct(self.position),
+            b'"' => Token::String(self.read_string()),
+            _ if self.ch.is_ascii_punctuation() => Token::Punct(self.position),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let range = self.read_ident();
-                return Ok(Token::Ident(range));
+                return Ok(self.ident_or_builtin(&range));
             },
             b'0'..=b'9' => return Ok(self.read_numeric()),
             0 => Token::Eof,
@@ -48,6 +50,14 @@ impl<'a> Lexer<'a> {
 
         self.read_char();
         return Ok(tok);
+    }
+
+    fn ident_or_builtin(&self, range: &Range) -> Token {
+        return match self.slice(&range) {
+            b"true" => Token::True,
+            b"false" => Token::False,
+            _ => Token::Ident(*range)
+        };
     }
 
     fn peek(&self) -> u8 {
@@ -98,25 +108,33 @@ impl<'a> Lexer<'a> {
         return Token::Int((pos, self.position));
     }
 
-    fn read_string(&mut self) -> Token {
     fn read_float(&mut self, start: usize) -> Range {
         while self.ch.is_ascii_digit() {
             self.read_char();
         }
         return (start, self.position)
     }
+
+    fn read_string(&mut self) -> Range {
         let pos = self.position + 1;
         while self.peek() != b'"' && self.ch != 0 {
             self.read_char();
         }
         self.read_char();
-        return Token::String((pos, self.position));
+        return (pos, self.position);
     }
 
+    fn slice(&self, range: &Range) -> &[u8] {
+        let start = range.0;
+        let end = range.1.min(self.input.len());
+        return &self.input[start..end];
+    }
 
     fn str_from_range(&self, range: &Range) -> &str {
-        return std::str::from_utf8(&self.input[range.0..range.1.min(self.input.len())]).unwrap();
+        let slice = self.slice(range);
+        return std::str::from_utf8(slice).unwrap();
     }
+
     pub fn print_token(&self, token: &Token) {
         match token {
             Token::Ident(range) => {
@@ -133,7 +151,13 @@ impl<'a> Lexer<'a> {
             },
             Token::String(range) => {
                 println!("String(\"{}\")", self.str_from_range(range));
-            }
+            },
+            Token::True => {
+                println!("True");
+            },
+            Token::False => {
+                println!("False");
+            },
             Token::Eof => {
                 println!("Eof");
             }
@@ -215,5 +239,13 @@ mod tests {
             _ => unreachable!("expected float, got {:?}", tok)
         };
         assert_eq!(lex.str_from_range(&range), "10.0");
+    }
+
+    #[test]
+    fn bools() {
+        let contents = "true false";
+        let mut lex = Lexer::new(contents);
+        assert_eq!(lex.next_token().unwrap(), Token::True);
+        assert_eq!(lex.next_token().unwrap(), Token::False);
     }
 }
