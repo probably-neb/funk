@@ -6,6 +6,7 @@ pub enum Token {
     Ident(Range),
     Punct(usize),
     Int(Range),
+    Float(Range),
     String(Range),
     Eof,
 }
@@ -40,7 +41,7 @@ impl<'a> Lexer<'a> {
                 let range = self.read_ident();
                 return Ok(Token::Ident(range));
             },
-            b'0'..=b'9' => return Ok(Token::Int(self.read_int())),
+            b'0'..=b'9' => return Ok(self.read_numeric()),
             0 => Token::Eof,
             ch => unreachable!("unrecognized char: {}", ch as char)
         };
@@ -83,16 +84,27 @@ impl<'a> Lexer<'a> {
         return (pos, self.position);
     }
 
-    fn read_int(&mut self) -> Range {
+    fn read_numeric(&mut self) -> Token {
         let pos = self.position;
         while self.ch.is_ascii_digit() {
             self.read_char();
         }
+        // TODO: check for floats in scientific notation
+        if self.ch == b'.' {
+            self.read_char();
+            return Token::Float(self.read_float(pos));
+        }
 
-        return (pos, self.position);
+        return Token::Int((pos, self.position));
     }
 
     fn read_string(&mut self) -> Token {
+    fn read_float(&mut self, start: usize) -> Range {
+        while self.ch.is_ascii_digit() {
+            self.read_char();
+        }
+        return (start, self.position)
+    }
         let pos = self.position + 1;
         while self.peek() != b'"' && self.ch != 0 {
             self.read_char();
@@ -116,6 +128,9 @@ impl<'a> Lexer<'a> {
             Token::Int(range) => {
                 println!("Int({})", self.str_from_range(range));
             },
+            Token::Float(range) => {
+                println!("Float({})", self.str_from_range(range));
+            },
             Token::String(range) => {
                 println!("String(\"{}\")", self.str_from_range(range));
             }
@@ -134,7 +149,7 @@ mod tests {
     fn int() {
         let contents = "10";
         let mut lex = Lexer::new(contents);
-        assert!(lex.read_int() == (0, 2));
+        assert!(lex.read_numeric() == Token::Int((0, 2)));
     }
 
     #[test]
@@ -188,5 +203,17 @@ mod tests {
             _ => unreachable!("expected string, got {:?}", tok)
         };
         assert_eq!(lex.str_from_range(&range), "foo");
+    }
+
+    #[test]
+    fn float() {
+        let contents = "10.0";
+        let mut lex = Lexer::new(contents);
+        let tok = lex.read_numeric();
+        let range = match tok {
+            Token::Float(range) => range,
+            _ => unreachable!("expected float, got {:?}", tok)
+        };
+        assert_eq!(lex.str_from_range(&range), "10.0");
     }
 }
