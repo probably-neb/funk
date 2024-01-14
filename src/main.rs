@@ -10,7 +10,7 @@ fn main() -> Result<()> {
     let mut lex = Lexer::new(&contents);
     loop {
         let tok = lex.next_token()?;
-        lex.print_token(&tok);
+        println!("{:?}", lex.repr(&tok));
         if tok == Token::Eof {
             break;
         }

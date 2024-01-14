@@ -4,10 +4,25 @@ type Range = (usize, usize);
 #[derive(Debug, PartialEq)]
 pub enum Token {
     Ident(Range),
+    // FIXME: remove
     Punct(usize),
     Int(Range),
     Float(Range),
     String(Range),
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    Eq,
+    DblEq,
+    Plus,
+    Minus,
+    LParen,
+    RParen,
+    LSquirly,
+    RSquirly,
+    LBrace,
+    RBrace,
     True,
     False,
     Eof,
@@ -38,14 +53,14 @@ impl<'a> Lexer<'a> {
 
         let tok = match self.ch {
             b'"' => Token::String(self.read_string()),
-            _ if self.ch.is_ascii_punctuation() => Token::Punct(self.position),
+            _ if self.ch.is_ascii_punctuation() => self.read_symbol(),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let range = self.read_ident();
                 return Ok(self.ident_or_builtin(&range));
-            },
+            }
             b'0'..=b'9' => return Ok(self.read_numeric()),
             0 => Token::Eof,
-            ch => unreachable!("unrecognized char: {}", ch as char)
+            ch => unreachable!("unrecognized char: {}", ch as char),
         };
 
         self.read_char();
@@ -56,7 +71,7 @@ impl<'a> Lexer<'a> {
         return match self.slice(&range) {
             b"true" => Token::True,
             b"false" => Token::False,
-            _ => Token::Ident(*range)
+            _ => Token::Ident(*range),
         };
     }
 
@@ -99,12 +114,10 @@ impl<'a> Lexer<'a> {
         while self.ch.is_ascii_digit() {
             self.read_char();
         }
-        // TODO: check for floats in scientific notation
-        if self.ch == b'.' {
+        if self.ch == b'.' || self.ch == b'e' {
             self.read_char();
             return Token::Float(self.read_float(pos));
         }
-
         return Token::Int((pos, self.position));
     }
 
@@ -112,7 +125,16 @@ impl<'a> Lexer<'a> {
         while self.ch.is_ascii_digit() {
             self.read_char();
         }
-        return (start, self.position)
+        if self.ch == b'e' {
+            self.read_char();
+            if self.ch == b'-' || self.ch == b'+' {
+                self.read_char();
+            }
+            while self.ch.is_ascii_digit() {
+                self.read_char();
+            }
+        }
+        return (start, self.position);
     }
 
     fn read_string(&mut self) -> Range {
@@ -124,43 +146,79 @@ impl<'a> Lexer<'a> {
         return (pos, self.position);
     }
 
+    fn read_symbol(&mut self) -> Token {
+        macro_rules! if_peek {
+            ($char:literal, $a:expr, $b:expr) => {
+                match self.peek() {
+                    $char => {
+                        self.read_char();
+                        $a
+                    }
+                    _ => $b,
+                }
+            };
+        }
+        match self.ch {
+            b'<' => if_peek!(b'=', Token::LtEq, Token::Lt),
+            b'>' => if_peek!(b'=', Token::GtEq, Token::Gt),
+            b'=' => if_peek!(b'=', Token::DblEq, Token::Eq),
+            b'-' => Token::Minus,
+            b'(' => Token::LParen,
+            b')' => Token::RParen,
+            b'{' => Token::LSquirly,
+            b'}' => Token::RSquirly,
+            b'[' => Token::LBrace,
+            b']' => Token::RBrace,
+            b'+' => Token::Plus,
+            _ => Token::Punct(self.position),
+        }
+    }
+
     fn slice(&self, range: &Range) -> &[u8] {
         let start = range.0;
         let end = range.1.min(self.input.len());
         return &self.input[start..end];
     }
 
-    fn str_from_range(&self, range: &Range) -> &str {
+    fn as_str(&self, range: &Range) -> &str {
         let slice = self.slice(range);
         return std::str::from_utf8(slice).unwrap();
     }
 
-    pub fn print_token(&self, token: &Token) {
+    pub fn repr(&self, token: &Token) -> String {
+        macro_rules! label {
+            ($label:literal, $range:expr) => {
+                format!("{}({})", $label, self.as_str($range))
+            };
+        }
+        macro_rules! lit {
+            ($value:literal) => {
+                format!("{}", $value)
+            };
+        }
         match token {
-            Token::Ident(range) => {
-                println!("Ident({})", self.str_from_range(range));
-            },
-            Token::Punct(pos) => {
-                println!("Punct({})", self.input[*pos] as char);
-            },
-            Token::Int(range) => {
-                println!("Int({})", self.str_from_range(range));
-            },
-            Token::Float(range) => {
-                println!("Float({})", self.str_from_range(range));
-            },
-            Token::String(range) => {
-                println!("String(\"{}\")", self.str_from_range(range));
-            },
-            Token::True => {
-                println!("True");
-            },
-            Token::False => {
-                println!("False");
-            },
-            Token::Eof => {
-                println!("Eof");
-            }
+            Token::Ident(range) => label!("Ident", range),
+            Token::Punct(pos) => label!("Punct", &(*pos, *pos + 1)),
+            Token::Int(range) => label!("Int", range),
+            Token::Float(range) => label!("Float", range),
+            Token::String(range) => label!("String", range),
+            Token::True => lit!("true"),
+            Token::False => lit!("false"),
+            Token::Lt => lit!("<"),
+            Token::LtEq => lit!("<="),
+            Token::Gt => lit!(">"),
+            Token::GtEq => lit!(">="),
+            Token::Eq => lit!("="),
+            Token::DblEq => lit!("=="),
+            Token::Plus => lit!("+"),
+            Token::Minus => lit!("-"),
+            Token::LParen => lit!("("),
+            Token::RParen => lit!(")"),
+            Token::LSquirly => lit!("{"),
+            Token::RSquirly => lit!("}"),
+            Token::LBrace => lit!("["),
+            Token::RBrace => lit!("]"),
+            Token::Eof => lit!("EOF"),
         }
     }
 }
@@ -211,10 +269,9 @@ mod tests {
     fn punct_sep_ident() {
         let contents = "foo+bar";
         let mut lex = Lexer::new(contents);
-        assert!(lex.read_ident() == (0, 3));
-        assert!(lex.next_token().unwrap() == Token::Punct(3));
-        let range = lex.read_ident();
-        assert!(lex.str_from_range(&range) == "bar");
+        assert_eq!(lex.next_token().unwrap(), Token::Ident((0, 3)));
+        assert_eq!(lex.next_token().unwrap(), Token::Plus);
+        assert_eq!(lex.next_token().unwrap(), Token::Ident((4, 7)));
     }
 
     #[test]
@@ -224,9 +281,9 @@ mod tests {
         let tok = lex.next_token().unwrap();
         let range = match tok {
             Token::String(range) => range,
-            _ => unreachable!("expected string, got {:?}", tok)
+            _ => unreachable!("expected string, got {:?}", tok),
         };
-        assert_eq!(lex.str_from_range(&range), "foo");
+        assert_eq!(lex.as_str(&range), "foo");
     }
 
     #[test]
@@ -236,9 +293,9 @@ mod tests {
         let tok = lex.read_numeric();
         let range = match tok {
             Token::Float(range) => range,
-            _ => unreachable!("expected float, got {:?}", tok)
+            _ => unreachable!("expected float, got {:?}", tok),
         };
-        assert_eq!(lex.str_from_range(&range), "10.0");
+        assert_eq!(lex.as_str(&range), "10.0");
     }
 
     #[test]
@@ -247,5 +304,51 @@ mod tests {
         let mut lex = Lexer::new(contents);
         assert_eq!(lex.next_token().unwrap(), Token::True);
         assert_eq!(lex.next_token().unwrap(), Token::False);
+    }
+
+    #[test]
+    fn brackets() {
+        let contents = "[](){}";
+        let mut lex = Lexer::new(contents);
+        assert_eq!(lex.next_token().unwrap(), Token::LBrace);
+        assert_eq!(lex.next_token().unwrap(), Token::RBrace);
+        assert_eq!(lex.next_token().unwrap(), Token::LParen);
+        assert_eq!(lex.next_token().unwrap(), Token::RParen);
+        assert_eq!(lex.next_token().unwrap(), Token::LSquirly);
+        assert_eq!(lex.next_token().unwrap(), Token::RSquirly);
+    }
+
+    #[test]
+    fn eq_dbl_eq() {
+        let contents = "== =";
+        let mut lex = Lexer::new(contents);
+        assert_eq!(lex.next_token().unwrap(), Token::DblEq);
+        assert_eq!(lex.next_token().unwrap(), Token::Eq);
+    }
+
+    #[test]
+    fn lteq() {
+        let contents = "<=";
+        let mut lex = Lexer::new(contents);
+        assert_eq!(lex.next_token().unwrap(), Token::LtEq);
+    }
+
+    #[test]
+    fn gteq() {
+        let contents = ">=";
+        let mut lex = Lexer::new(contents);
+        assert_eq!(lex.next_token().unwrap(), Token::GtEq);
+    }
+
+    #[test]
+    fn float_scientific() {
+        let contents = "1.0e10";
+        let mut lex = Lexer::new(contents);
+        let tok = lex.read_numeric();
+        let range = match tok {
+            Token::Float(range) => range,
+            _ => unreachable!("expected float, got {:?}", tok),
+        };
+        assert_eq!(lex.as_str(&range), "1.0e10");
     }
 }
