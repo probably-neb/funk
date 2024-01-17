@@ -1,7 +1,7 @@
 use anyhow::Result;
 type Range = (usize, usize);
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Token {
     Ident(Range),
     // FIXME: remove
@@ -9,6 +9,7 @@ pub enum Token {
     Int(Range),
     Float(Range),
     String(Range),
+    Char(usize),
     Lt,
     LtEq,
     Gt,
@@ -17,6 +18,7 @@ pub enum Token {
     DblEq,
     Plus,
     Minus,
+    Mul,
     LParen,
     RParen,
     LSquirly,
@@ -26,6 +28,7 @@ pub enum Token {
     True,
     False,
     Eof,
+    If,
 }
 
 pub struct Lexer<'a> {
@@ -43,47 +46,30 @@ impl<'a> Lexer<'a> {
             ch: 0,
             input: input.as_bytes(),
         };
-        lex.read_char();
+        lex.step();
 
         return lex;
     }
 
+    // TODO: result/option required?
     pub fn next_token(&mut self) -> Result<Token> {
         self.skip_whitespace();
 
         let tok = match self.ch {
             b'"' => Token::String(self.read_string()),
+            b'\'' => Token::Char(self.read_char()),
             _ if self.ch.is_ascii_punctuation() => self.read_symbol(),
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
-                let range = self.read_ident();
-                return Ok(self.ident_or_builtin(&range));
-            }
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => return Ok(self.ident_or_builtin()),
             b'0'..=b'9' => return Ok(self.read_numeric()),
             0 => Token::Eof,
             ch => unreachable!("unrecognized char: {}", ch as char),
         };
 
-        self.read_char();
+        self.step();
         return Ok(tok);
     }
 
-    fn ident_or_builtin(&self, range: &Range) -> Token {
-        return match self.slice(&range) {
-            b"true" => Token::True,
-            b"false" => Token::False,
-            _ => Token::Ident(*range),
-        };
-    }
-
-    fn peek(&self) -> u8 {
-        if self.read_position >= self.input.len() {
-            return 0;
-        } else {
-            return self.input[self.read_position];
-        }
-    }
-
-    fn read_char(&mut self) {
+    fn step(&mut self) {
         if self.read_position >= self.input.len() {
             self.ch = 0;
         } else {
@@ -94,16 +80,41 @@ impl<'a> Lexer<'a> {
         self.read_position += 1;
     }
 
+    fn expect(&mut self, byte: u8) {
+        self.step();
+        if self.ch != byte {
+            panic!("unexpected char {} in input, expected {}", self.ch, self.ch)
+        }
+    }
+
+    fn peek(&self) -> u8 {
+        if self.read_position >= self.input.len() {
+            return 0;
+        } else {
+            return self.input[self.read_position];
+        }
+    }
+
     fn skip_whitespace(&mut self) {
         while self.ch.is_ascii_whitespace() {
-            self.read_char();
+            self.step();
         }
+    }
+
+    fn ident_or_builtin(&mut self) -> Token {
+        let range = self.read_ident();
+        return match self.slice(&range) {
+            b"true" => Token::True,
+            b"false" => Token::False,
+            b"if" => Token::If,
+            _ => Token::Ident(range),
+        };
     }
 
     fn read_ident(&mut self) -> Range {
         let pos = self.position;
         while self.ch.is_ascii_alphabetic() || self.ch == b'_' {
-            self.read_char();
+            self.step();
         }
 
         return (pos, self.position);
@@ -112,10 +123,10 @@ impl<'a> Lexer<'a> {
     fn read_numeric(&mut self) -> Token {
         let pos = self.position;
         while self.ch.is_ascii_digit() {
-            self.read_char();
+            self.step();
         }
         if self.ch == b'.' || self.ch == b'e' {
-            self.read_char();
+            self.step();
             return Token::Float(self.read_float(pos));
         }
         return Token::Int((pos, self.position));
@@ -123,15 +134,15 @@ impl<'a> Lexer<'a> {
 
     fn read_float(&mut self, start: usize) -> Range {
         while self.ch.is_ascii_digit() {
-            self.read_char();
+            self.step();
         }
         if self.ch == b'e' {
-            self.read_char();
+            self.step();
             if self.ch == b'-' || self.ch == b'+' {
-                self.read_char();
+                self.step();
             }
             while self.ch.is_ascii_digit() {
-                self.read_char();
+                self.step();
             }
         }
         return (start, self.position);
@@ -140,10 +151,17 @@ impl<'a> Lexer<'a> {
     fn read_string(&mut self) -> Range {
         let pos = self.position + 1;
         while self.peek() != b'"' && self.ch != 0 {
-            self.read_char();
+            self.step();
         }
-        self.read_char();
+        self.step();
         return (pos, self.position);
+    }
+
+    fn read_char(&mut self) -> usize {
+        let pos = self.position + 1;
+        self.step();
+        self.expect(b'\'');
+        return pos;
     }
 
     fn read_symbol(&mut self) -> Token {
@@ -151,7 +169,7 @@ impl<'a> Lexer<'a> {
             ($char:literal, $a:expr, $b:expr) => {
                 match self.peek() {
                     $char => {
-                        self.read_char();
+                        self.step();
                         $a
                     }
                     _ => $b,
@@ -170,6 +188,7 @@ impl<'a> Lexer<'a> {
             b'[' => Token::LBrace,
             b']' => Token::RBrace,
             b'+' => Token::Plus,
+            b'*' => Token::Mul,
             _ => Token::Punct(self.position),
         }
     }
@@ -193,7 +212,7 @@ impl<'a> Lexer<'a> {
         }
         macro_rules! lit {
             ($value:literal) => {
-                format!("{}", $value)
+                $value.to_string()
             };
         }
         match token {
@@ -202,6 +221,8 @@ impl<'a> Lexer<'a> {
             Token::Int(range) => label!("Int", range),
             Token::Float(range) => label!("Float", range),
             Token::String(range) => label!("String", range),
+            Token::Char(pos) => label!("Char", &(*pos, *pos + 1)),
+            Token::If => lit!("if"),
             Token::True => lit!("true"),
             Token::False => lit!("false"),
             Token::Lt => lit!("<"),
@@ -212,6 +233,7 @@ impl<'a> Lexer<'a> {
             Token::DblEq => lit!("=="),
             Token::Plus => lit!("+"),
             Token::Minus => lit!("-"),
+            Token::Mul => lit!("*"),
             Token::LParen => lit!("("),
             Token::RParen => lit!(")"),
             Token::LSquirly => lit!("{"),
@@ -284,6 +306,14 @@ mod tests {
             _ => unreachable!("expected string, got {:?}", tok),
         };
         assert_eq!(lex.as_str(&range), "foo");
+    }
+
+    #[test]
+    fn char() {
+        let contents = "'a'";
+        let mut lex = Lexer::new(contents);
+        let tok = lex.next_token().unwrap();
+        assert_eq!(tok, Token::Char(1));
     }
 
     #[test]
