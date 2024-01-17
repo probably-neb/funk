@@ -30,6 +30,7 @@ pub enum Expr {
         lhs: EIndex,
         rhs: EIndex,
     },
+    String(TIndex),
 }
 
 macro_rules! eat {
@@ -96,6 +97,7 @@ impl<'a> Parser<'a> {
         }
         let expr = match tok {
             Token::Int(_) => Ok(Expr::Int(self.tok_i)),
+            Token::String(_) => Ok(Expr::String(self.tok_i)),
             Token::If => return Some(self.if_expr()),
             Token::Eq | Token::Mul | Token::Plus | Token::Minus => {
                 return Some(self.binop_expr(tok))
@@ -119,7 +121,6 @@ impl<'a> Parser<'a> {
     }
 
     fn if_expr(&mut self) -> Result<EIndex> {
-        eat!(self, Token::If)?;
         let if_i = self.push(Expr::If {
             cond: 0,
             branch_true: 0,
@@ -139,12 +140,13 @@ impl<'a> Parser<'a> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
+    #[cfg(test)]
     macro_rules! assert_matches {
         ($expr:expr, $pat:pat) => {
-            assert!(matches!($expr, $pat))
+            assert!(matches!($expr, $pat), "expected {:?}, got {:?}", stringify!($pat), $expr)
         };
         ($expr:expr, $pat:pat, $message:literal) => {
             assert!(matches!($expr, $pat if $cond), $message)
@@ -217,8 +219,11 @@ mod test {
     fn if_expr() {
         let contents = r#"(if (= (* 2 2) 4) "yes" "no")"#;
         let parser = parse(contents).expect("parser error");
-        assert_eq!(parser.tokens.len(), 13);
-        // assert_eq!(parser.tokens[0], Token::Int((0, 2)));
+        assert_matches!(parser.exprs[0], Expr::If {
+            cond: 1,
+            branch_true: 6,
+            branch_false: 7
+        });
         // assert_eq!(parser.exprs.len(), 1);
         // assert_eq!(parser.exprs[0], Expr::Int(0));
     }
