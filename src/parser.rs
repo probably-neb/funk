@@ -16,7 +16,7 @@ pub struct Parser<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Expr {
     Nop,
     Int(TIndex),
@@ -27,8 +27,7 @@ pub enum Expr {
         branch_false: EIndex,
     },
     Binop {
-        // TODO: use TIndex for op (token pushes expr size to 48 instead of 32)
-        op: Token,
+        op: TIndex,
         lhs: EIndex,
         rhs: EIndex,
     },
@@ -113,7 +112,7 @@ impl<'a> Parser<'a> {
             Token::If => return Some(self.if_expr()),
             Token::Fun => return Some(self.fun_expr()),
             Token::Eq | Token::Mul | Token::Plus | Token::Minus => {
-                return Some(self.binop_expr(tok))
+                return Some(self.binop_expr(self.tok_i))
             }
             _ => unimplemented!("{:?} not implemented", tok),
         };
@@ -124,13 +123,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn binop_expr(&mut self, op: Token) -> Result<EIndex> {
-        let eq_i = self.reserve();
+    fn binop_expr(&mut self, op: TIndex) -> Result<EIndex> {
+        let expr_i = self.reserve();
         let lhs = self.expr().unwrap()?;
         let rhs = self.expr().unwrap()?;
         eat!(self, Token::RParen)?;
-        self.exprs[eq_i] = Expr::Binop { op, lhs, rhs };
-        Ok(eq_i)
+        self.exprs[expr_i] = Expr::Binop { op, lhs, rhs };
+        Ok(expr_i)
     }
 
     fn if_expr(&mut self) -> Result<EIndex> {
@@ -186,6 +185,12 @@ impl<'a> Parser<'a> {
     }
 }
 
+// NOTE: something is detecting variables declared in test macros as unused
+// this is a bug in clippy / the lsp I believe, the lsp picks up on
+// the fact the variables are the same for renaming + undeclared var
+// warning and the code works fine
+// hence the allow unused variables
+#[allow(unused_variables)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +217,23 @@ mod tests {
         }};
     }
 
+    macro_rules! let_assert_matches {
+        ($expr:expr, $pat:pat, $message:literal, $($arg:tt)*) => {
+            assert!(matches!($expr, $pat), $message, $($arg)*);
+            let $pat = $expr else { unreachable!() };
+        };
+        ($expr:expr, $pat:pat) => {
+            assert!(matches!($expr, $pat), "expected {:?}, got {:?}", stringify!($pat), $expr);
+            let $pat = $expr else { unreachable!() };
+        };
+    }
+
+    macro_rules! assert_tok_is {
+        ($parser:expr, $i:ident, $tok:pat) => {
+            assert_matches!($parser.tokens[$i], $tok)
+        };
+    }
+
     #[test]
     fn literal() {
         let contents = "10";
@@ -227,36 +249,32 @@ mod tests {
         let contents = "(= 10 10)";
         let parser = parse(contents).expect("parser error");
         assert_eq!(parser.tokens.len(), 5);
-        assert_eq!(
-            parser.exprs[0],
-            Expr::Binop {
-                op: Token::Eq,
-                lhs: 1,
-                rhs: 2
-            }
-        );
+        assert_eq!( parser.exprs[0], Expr::Binop { op: 1, lhs: 1, rhs: 2 });
     }
 
     #[test]
     fn eq_with_sub_expr() {
         let contents = "(= (* 2 2) 4)";
         let parser = parse(contents).expect("parser error");
-        assert_matches!(
+        let_assert_matches!(
             parser.exprs[0],
             Expr::Binop {
-                op: Token::Eq,
+                op,
                 lhs: 1,
                 rhs: 4
             }
         );
-        assert_matches!(
+        assert_tok_is!(parser, op, Token::Eq);
+
+        let_assert_matches!(
             parser.exprs[1],
             Expr::Binop {
-                op: Token::Mul,
+                op,
                 lhs: 2,
                 rhs: 3
             }
-        )
+        );
+        assert_tok_is!(parser, op, Token::Mul);
     }
 
     #[test]
@@ -264,61 +282,24 @@ mod tests {
         let contents = "(* 10 10)";
         let parser = parse(contents).expect("parser error");
         assert_eq!(parser.tokens.len(), 5);
-        assert_eq!(
-            parser.exprs[0],
-            Expr::Binop {
-                op: Token::Mul,
-                lhs: 1,
-                rhs: 2
-            }
-        );
+        let_assert_matches!(parser.exprs[0], Expr::Binop{op, lhs: 1, rhs: 2});
+        assert_tok_is!(parser, op, Token::Mul);
     }
 
     #[test]
     fn if_expr() {
-        let contents = r#"(if (= (* 2 2) 4) "yes" "no")"#;
+        let contents = r#"(if (= 4 4) "yes" "no")"#;
         let parser = parse(contents).expect("parser error");
 
-        // NOTE: vars underscored due to unused var warning
-        // this is a bug in clippy / the lsp I believe, the lsp picks up on
-        // the fact the variables are the same for renaming + undeclared var
-        // warning and the code works finea
-        assert_matches!(
-            parser.exprs[0],
-            Expr::If {
-                cond: _cond,
-                branch_true: _branch_true,
-                branch_false: _branch_false,
-            } => {
-                assert_matches!(
-                    parser.exprs[_cond],
-                    Expr::Binop {
-                        op: Token::Eq,
-                        lhs: _lhs,
-                        rhs: _rhs
-                    } => {
-                        assert_matches!(
-                            parser.exprs[_lhs],
-                            Expr::Binop {
-                                op: Token::Mul,
-                                lhs: _,
-                                rhs: _
-                            }
-                        );
-                    }
-                );
-                assert_matches!(
-                    parser.exprs[_branch_true],
-                    Expr::String(_tok_i) =>
-                        assert_matches!(parser.tokens[_tok_i],
-                        Token::String(_range) =>
-                            assert_eq!(parser.lxr.as_str(&_range), "yes")
-                        )
-                );
-                assert_matches!(parser.exprs[_branch_false], Expr::String(_));
-
+        let_assert_matches!(parser.exprs[0], Expr::If {
+                cond,
+                branch_true,
+                branch_false,
             }
         );
+        assert_matches!(parser.exprs[cond], Expr::Binop { op: _, lhs: _, rhs: _ });
+        assert_matches!(parser.exprs[branch_true], Expr::String(_));
+        assert_matches!(parser.exprs[branch_false], Expr::String(_));
     }
 
     #[test]
@@ -341,38 +322,19 @@ mod tests {
     fn fun_expr() {
         let contents = "(fun foo (a b) (+ a b))";
         let parser = parse(contents).expect("parser error");
-        assert_matches!(
+        let_assert_matches!(
             parser.exprs[0],
             Expr::FunDef {
-                name: _name,
-                args: _args,
-                body: _body
-            } => {
-                assert_matches!(
-                    parser.tokens[_name],
-                    Token::Ident(_range) => {
-                        assert_eq!(parser.lxr.as_str(&_range), "foo")
-                    }
-                );
-                assert_matches!(
-                    parser.exprs[_body],
-                    Expr::Binop {
-                        op: Token::Plus,
-                        lhs: _lhs,
-                        rhs: _rhs
-                    } => {
-                        assert_matches!(
-                            parser.exprs[_lhs],
-                            Expr::Ident(_)
-                        );
-                        assert_matches!(
-                            parser.exprs[_rhs],
-                            Expr::Ident(_)
-                        );
-                    }
-                );
-                            
+                name,
+                args,
+                body
             }
         );
+        let_assert_matches!(
+            parser.tokens[name],
+            Token::Ident(range)
+        );
+        assert_eq!(parser.lxr.as_str(&range), "foo");
+        assert_matches!( parser.exprs[body], Expr::Binop { op: _, lhs: _, rhs: _ });
     }
 }
