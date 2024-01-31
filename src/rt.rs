@@ -34,5 +34,6 @@ mod test {
         ];
         let stack = run(&bytecode).unwrap();
         assert_eq!(vec![3], stack);
+        assert_eq!(stack.len(), 1);
     }
 }

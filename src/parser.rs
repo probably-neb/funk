@@ -3,10 +3,10 @@ use anyhow::{anyhow, Result};
 use crate::{lexer::{Token, Lexer}, ast::Ast};
 
 /// Expression index
-type EIndex = usize;
+pub type EIndex = usize;
 
 /// Token index
-type TIndex = usize;
+pub type TIndex = usize;
 
 pub struct Parser<'a> {
     lxr: Lexer<'a>,
@@ -66,12 +66,13 @@ impl<'a> Parser<'a> {
         Parser::_new(Lexer::new(contents))
     }
 
-    pub fn parse(mut self) -> Result<crate::ast::Ast> {
+    pub fn parse(mut self) -> Result<crate::ast::Ast<'a>> {
         self._parse()?;
-        Ok(Ast {
-            exprs: self.exprs,
-            tokens: self.tokens,
-        })
+        Ok(Ast::new(
+            self.exprs,
+            self.tokens,
+            self.lxr.input(),
+        ))
     }
 
     fn _parse(&mut self) -> Result<()> {
@@ -98,6 +99,9 @@ impl<'a> Parser<'a> {
         return self.exprs.len() - 1;
     }
 
+    // because AST is linearized reserve allows pushing a placeholder
+    // while the information required for the head of a subtree is gathered
+    // i.e. the index of the lhs and rhs of a binop
     fn reserve(&mut self) -> EIndex {
         return self.push(Expr::Nop);
     }
@@ -185,6 +189,7 @@ impl<'a> Parser<'a> {
         assert_eq!(self.tokens[self.tok_i], Token::RParen);
         Ok(first)
     }
+
 }
 
 // NOTE: something is detecting variables declared in test macros as unused
@@ -194,10 +199,10 @@ impl<'a> Parser<'a> {
 // hence the allow unused variables
 #[allow(unused_variables)]
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
-    fn parse<'a>(contents: &'a str) -> Result<Parser<'a>> {
+    pub fn parse<'a>(contents: &'a str) -> Result<Parser<'a>> {
         let mut parser = Parser::new(contents);
         parser._parse()?;
         Ok(parser)
@@ -226,6 +231,8 @@ mod tests {
         }};
     }
 
+    pub(crate) use assert_matches;
+
     macro_rules! let_assert_matches {
         ($expr:expr, $pat:pat, $message:literal, $($arg:tt)*) => {
             assert!(matches!($expr, $pat), $message, $($arg)*);
@@ -236,6 +243,7 @@ mod tests {
             let $pat = $expr else { unreachable!() };
         };
     }
+    pub(crate) use let_assert_matches;
 
     macro_rules! assert_tok_is {
         ($parser:expr, $i:ident, $tok:pat) => {

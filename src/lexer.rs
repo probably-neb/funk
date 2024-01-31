@@ -244,10 +244,14 @@ impl<'a> Lexer<'a> {
             Token::Eof => lit!("EOF"),
         }
     }
+
+    pub fn input(&self) -> &'a [u8] {
+        self.input
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     #[test]
