@@ -4,8 +4,6 @@ type Range = (usize, usize);
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Token {
     Ident(Range),
-    // FIXME: remove
-    Punct(usize),
     Int(Range),
     Float(Range),
     String(Range),
@@ -29,6 +27,7 @@ pub enum Token {
     False,
     Eof,
     If,
+    Fun,
 }
 
 pub struct Lexer<'a> {
@@ -58,9 +57,9 @@ impl<'a> Lexer<'a> {
         let tok = match self.ch {
             b'"' => Token::String(self.read_string()),
             b'\'' => Token::Char(self.read_char()),
-            _ if self.ch.is_ascii_punctuation() => self.read_symbol(),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => return Ok(self.ident_or_builtin()),
             b'0'..=b'9' => return Ok(self.read_numeric()),
+            _ if self.ch.is_ascii_graphic() => self.read_symbol(),
             0 => Token::Eof,
             ch => unreachable!("unrecognized char: {}", ch as char),
         };
@@ -107,6 +106,7 @@ impl<'a> Lexer<'a> {
             b"true" => Token::True,
             b"false" => Token::False,
             b"if" => Token::If,
+            b"fun" => Token::Fun,
             _ => Token::Ident(range),
         };
     }
@@ -189,17 +189,17 @@ impl<'a> Lexer<'a> {
             b']' => Token::RBrace,
             b'+' => Token::Plus,
             b'*' => Token::Mul,
-            _ => Token::Punct(self.position),
+            _ => unreachable!("unrecognized punct {}", self.ch as char)
         }
     }
 
-    fn slice(&self, range: &Range) -> &[u8] {
+    pub fn slice(&self, range: &Range) -> &[u8] {
         let start = range.0;
         let end = range.1.min(self.input.len());
         return &self.input[start..end];
     }
 
-    fn as_str(&self, range: &Range) -> &str {
+    pub fn as_str(&self, range: &Range) -> &str {
         let slice = self.slice(range);
         return std::str::from_utf8(slice).unwrap();
     }
@@ -217,11 +217,12 @@ impl<'a> Lexer<'a> {
         }
         match token {
             Token::Ident(range) => label!("Ident", range),
-            Token::Punct(pos) => label!("Punct", &(*pos, *pos + 1)),
+            // Token::Punct(pos) => label!("Punct", &(*pos, *pos + 1)),
             Token::Int(range) => label!("Int", range),
             Token::Float(range) => label!("Float", range),
             Token::String(range) => label!("String", range),
             Token::Char(pos) => label!("Char", &(*pos, *pos + 1)),
+            Token::Fun => lit!("fun"),
             Token::If => lit!("if"),
             Token::True => lit!("true"),
             Token::False => lit!("false"),
