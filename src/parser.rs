@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 
-use crate::{lexer::Token, Lexer};
+use crate::{lexer::{Token, Lexer}, ast::Ast};
 
 /// Expression index
 type EIndex = usize;
@@ -53,12 +53,6 @@ macro_rules! eat {
     };
 }
 
-pub fn parse<'a>(contents: &'a str) -> Result<Parser<'a>> {
-    let mut parser = Parser::new(contents);
-    parser.parse()?;
-    Ok(parser)
-}
-
 impl<'a> Parser<'a> {
     fn _new(lxr: Lexer<'a>) -> Parser<'a> {
         Parser {
@@ -72,7 +66,15 @@ impl<'a> Parser<'a> {
         Parser::_new(Lexer::new(contents))
     }
 
-    pub fn parse(&mut self) -> Result<()> {
+    pub fn parse(mut self) -> Result<crate::ast::Ast> {
+        self._parse()?;
+        Ok(Ast {
+            exprs: self.exprs,
+            tokens: self.tokens,
+        })
+    }
+
+    fn _parse(&mut self) -> Result<()> {
         while let Some(expr) = self.expr() {
             expr?;
         }
@@ -194,6 +196,13 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse<'a>(contents: &'a str) -> Result<Parser<'a>> {
+        let mut parser = Parser::new(contents);
+        parser._parse()?;
+        Ok(parser)
+    }
+
 
     #[cfg(test)]
     macro_rules! assert_matches {
