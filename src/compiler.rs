@@ -6,6 +6,9 @@ use crate::parser::{EIndex, Expr, TIndex};
 pub enum ByteCode {
     Push(u64),
     Add,
+    Sub,
+    Mul,
+    Div,
 }
 
 pub struct Compiler<'a> {
@@ -70,6 +73,9 @@ impl<'a> Compiler<'a> {
         self.compile_expr(self.ast.exprs[rhs]);
         let bc_op = match self.ast.tokens[op] {
             Token::Plus => ByteCode::Add,
+            Token::Minus => ByteCode::Sub,
+            Token::Mul => ByteCode::Mul,
+            Token::Div => ByteCode::Div,
             _ => unimplemented!(),
         };
         self.push(bc_op);
@@ -155,12 +161,35 @@ mod tests {
         assert_bytecode_matches!(
             compiler.bytecode,
             [
-            ByteCode::Push(1),
-            ByteCode::Push(2),
-            ByteCode::Add,
-            ByteCode::Push(3),
-            ByteCode::Push(4),
-            ByteCode::Add
+                ByteCode::Push(1),
+                ByteCode::Push(2),
+                ByteCode::Add,
+                ByteCode::Push(3),
+                ByteCode::Push(4),
+                ByteCode::Add
+            ]
+        );
+    }
+
+    #[test]
+    fn all_binops() {
+        let contents = "(+ 1 2) (- 3 4) (* 5 6) (/ 7 8)";
+        let compiler = compile(contents);
+        assert_bytecode_matches!(
+            compiler.bytecode,
+            [
+                ByteCode::Push(1),
+                ByteCode::Push(2),
+                ByteCode::Add,
+                ByteCode::Push(3),
+                ByteCode::Push(4),
+                ByteCode::Sub,
+                ByteCode::Push(5),
+                ByteCode::Push(6),
+                ByteCode::Mul,
+                ByteCode::Push(7),
+                ByteCode::Push(8),
+                ByteCode::Div
             ]
         );
     }

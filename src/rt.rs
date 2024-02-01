@@ -6,6 +6,7 @@ type Stack = Vec<u64>;
 
 pub fn run(bytecode: &[ByteCode]) -> Result<Stack> {
     let mut stack = Vec::new();
+
     for bc in bytecode.into_iter() {
         match *bc {
             ByteCode::Push(i) => {
@@ -15,7 +16,23 @@ pub fn run(bytecode: &[ByteCode]) -> Result<Stack> {
                 let rhs = stack.pop().context("stack underflow")?;
                 let lhs = stack.pop().context("stack underflow")?;
                 stack.push(lhs + rhs);
-            }
+            },
+            ByteCode::Sub => {
+                let rhs = stack.pop().context("stack underflow")?;
+                let lhs = stack.pop().context("stack underflow")?;
+                stack.push(lhs - rhs);
+            },
+            ByteCode::Mul => {
+                let rhs = stack.pop().context("stack underflow")?;
+                let lhs = stack.pop().context("stack underflow")?;
+                stack.push(lhs * rhs);
+            },
+            ByteCode::Div => {
+                let rhs = stack.pop().context("stack underflow")?;
+                let lhs = stack.pop().context("stack underflow")?;
+                stack.push(lhs / rhs);
+            },
+            _ => unimplemented!(),
         }
     }
     Ok(stack)

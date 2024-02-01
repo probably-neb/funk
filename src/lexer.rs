@@ -17,6 +17,7 @@ pub enum Token {
     Plus,
     Minus,
     Mul,
+    Div,
     LParen,
     RParen,
     LSquirly,
@@ -189,6 +190,7 @@ impl<'a> Lexer<'a> {
             b']' => Token::RBrace,
             b'+' => Token::Plus,
             b'*' => Token::Mul,
+            b'/' => Token::Div,
             _ => unreachable!("unrecognized punct {}", self.ch as char)
         }
     }
@@ -235,6 +237,7 @@ impl<'a> Lexer<'a> {
             Token::Plus => lit!("+"),
             Token::Minus => lit!("-"),
             Token::Mul => lit!("*"),
+            Token::Div => lit!("/"),
             Token::LParen => lit!("("),
             Token::RParen => lit!(")"),
             Token::LSquirly => lit!("{"),

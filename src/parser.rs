@@ -117,7 +117,7 @@ impl<'a> Parser<'a> {
             Token::String(_) => Ok(Expr::String(self.tok_i)),
             Token::If => return Some(self.if_expr()),
             Token::Fun => return Some(self.fun_expr()),
-            Token::Eq | Token::Mul | Token::Plus | Token::Minus => {
+            Token::Eq | Token::Mul | Token::Plus | Token::Minus | Token::Div => {
                 return Some(self.binop_expr(self.tok_i))
             }
             _ => unimplemented!("{:?} not implemented", tok),
