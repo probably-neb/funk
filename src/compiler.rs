@@ -1,6 +1,6 @@
 use crate::ast::Ast;
 use crate::lexer::Token;
-use crate::parser::{Expr, TIndex};
+use crate::parser::{EIndex, Expr, TIndex};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ByteCode {
@@ -30,6 +30,7 @@ impl<'a> Compiler<'a> {
         let num_exprs = self.ast.exprs.len();
 
         // skip visited
+        // TODO: is there a way to know what has been visited based on tree structure?
         while self.expr_i < num_exprs && self.visited[self.expr_i] {
             self.expr_i += 1;
         }
@@ -48,25 +49,32 @@ impl<'a> Compiler<'a> {
 
     pub fn compile(&mut self) {
         while let Some(expr) = self.next_expr() {
-            match expr {
-                Expr::Int(i) => {
-                    self.compile_int(i);
-                }
-                Expr::Binop { op, lhs, rhs } => {
-                    self.visit(lhs);
-                    self.visit(rhs);
-                    self.bytecode.push(ByteCode::Push(lhs as u64));
-                    self.bytecode.push(ByteCode::Push(rhs as u64));
-                    match self.ast.tokens[op] {
-                        Token::Plus => {
-                            self.bytecode.push(ByteCode::Add);
-                        }
-                        _ => unimplemented!(),
-                    }
-                }
-                _ => unimplemented!(),
-            }
+            self.compile_expr(expr);
         }
+    }
+
+    fn compile_expr(&mut self, expr: Expr) {
+        match expr {
+            Expr::Int(i) => {
+                self.compile_int(i);
+            }
+            Expr::Binop { op, lhs, rhs } => {
+                self.compile_binop(op, lhs, rhs);
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    fn compile_binop(&mut self, op: TIndex, lhs: EIndex, rhs: EIndex) {
+        self.compile_expr(self.ast.exprs[lhs]);
+        self.compile_expr(self.ast.exprs[rhs]);
+        let bc_op = match self.ast.tokens[op] {
+            Token::Plus => ByteCode::Add,
+            _ => unimplemented!(),
+        };
+        self.push(bc_op);
+        self.visit(lhs);
+        self.visit(rhs);
     }
 
     fn push(&mut self, bc: ByteCode) {
@@ -110,7 +118,7 @@ mod tests {
                     i += 1;
                 }
             )*
-            assert_eq!($bytecode.len(), i, "expected {} ops, got {}", i, $bytecode.len());
+            assert_eq!($bytecode.len(), i, "expected {} ops, got {}. Extra: {:?}", i, $bytecode.len(), &$bytecode[i..]);
         };
     }
 
@@ -118,10 +126,42 @@ mod tests {
     fn add() {
         let contents = "( + 1 2 )";
         let compiler = compile(contents);
-        assert_bytecode_matches!(compiler.bytecode, [
+        assert_bytecode_matches!(
+            compiler.bytecode,
+            [ByteCode::Push(1), ByteCode::Push(2), ByteCode::Add]
+        );
+    }
+
+    #[test]
+    fn nested_add() {
+        let contents = "( + 1 ( + 2 3 ) )";
+        let compiler = compile(contents);
+        assert_bytecode_matches!(
+            compiler.bytecode,
+            [
+                ByteCode::Push(1),
+                ByteCode::Push(2),
+                ByteCode::Push(3),
+                ByteCode::Add,
+                ByteCode::Add
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_add() {
+        let contents = "(+ 1 2) (+ 3 4)";
+        let compiler = compile(contents);
+        assert_bytecode_matches!(
+            compiler.bytecode,
+            [
             ByteCode::Push(1),
             ByteCode::Push(2),
+            ByteCode::Add,
+            ByteCode::Push(3),
+            ByteCode::Push(4),
             ByteCode::Add
-        ]);
+            ]
+        );
     }
 }
