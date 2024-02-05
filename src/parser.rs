@@ -32,7 +32,7 @@ pub enum Expr {
         branch_false: EIndex,
     },
     Binop {
-        op: TIndex,
+        op: Binop,
         lhs: EIndex,
         rhs: EIndex,
     },
@@ -120,7 +120,7 @@ impl<'a> Parser<'a> {
             Token::If => return Some(self.if_expr()),
             Token::Fun => return Some(self.fun_expr()),
             Token::Eq | Token::Mul | Token::Plus | Token::Minus | Token::Div => {
-                return Some(self.binop_expr(self.tok_i))
+                return Some(self.binop_expr(Binop::from(tok)))
             }
             _ => unimplemented!("{:?} not implemented", tok),
         };
@@ -145,7 +145,7 @@ impl<'a> Parser<'a> {
         return self.data.put(str);
     }
 
-    fn binop_expr(&mut self, op: TIndex) -> Result<EIndex> {
+    fn binop_expr(&mut self, op: Binop) -> Result<EIndex> {
         let expr_i = self.reserve();
         let lhs = self.expr().unwrap()?;
         let rhs = self.expr().unwrap()?;
@@ -206,6 +206,29 @@ impl<'a> Parser<'a> {
         Ok(first)
     }
 }
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Binop {
+    Eq,
+    Mul,
+    Plus,
+    Minus,
+    Div,
+}
+
+impl From<Token> for Binop {
+    fn from(value: Token) -> Self {
+        match value {
+            Token::Eq => Binop::Eq,
+            Token::Mul => Binop::Mul,
+            Token::Plus => Binop::Plus,
+            Token::Minus => Binop::Minus,
+            Token::Div => Binop::Div,
+            _ => unreachable!("invalid binop: {:?}", value),
+        }
+    }
+}
+
 
 // NOTE: something is detecting variables declared in test macros as unused
 // this is a bug in clippy / the lsp I believe, the lsp picks up on
@@ -283,7 +306,7 @@ pub mod tests {
         assert_eq!(
             parser.exprs[0],
             Expr::Binop {
-                op: 1,
+                op: Binop::Eq,
                 lhs: 1,
                 rhs: 2
             }
@@ -294,11 +317,8 @@ pub mod tests {
     fn eq_with_sub_expr() {
         let contents = "(= (* 2 2) 4)";
         let parser = parse(contents).expect("parser error");
-        let_assert_matches!(parser.exprs[0], Expr::Binop { op, lhs: 1, rhs: 4 });
-        assert_tok_is!(parser, op, Token::Eq);
-
-        let_assert_matches!(parser.exprs[1], Expr::Binop { op, lhs: 2, rhs: 3 });
-        assert_tok_is!(parser, op, Token::Mul);
+        let_assert_matches!(parser.exprs[0], Expr::Binop { op: Binop::Eq, lhs: 1, rhs: 4 });
+        let_assert_matches!(parser.exprs[1], Expr::Binop { op: Binop::Mul, lhs: 2, rhs: 3 });
     }
 
     #[test]
@@ -306,8 +326,7 @@ pub mod tests {
         let contents = "(* 10 10)";
         let parser = parse(contents).expect("parser error");
         assert_eq!(parser.tokens.len(), 5);
-        let_assert_matches!(parser.exprs[0], Expr::Binop { op, lhs: 1, rhs: 2 });
-        assert_tok_is!(parser, op, Token::Mul);
+        let_assert_matches!(parser.exprs[0], Expr::Binop { op: Binop::Mul, lhs: 1, rhs: 2 });
     }
 
     #[test]

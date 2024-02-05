@@ -1,6 +1,6 @@
 use crate::ast::{Ast, DIndex};
 use crate::lexer::Token;
-use crate::parser::{EIndex, Expr, TIndex};
+use crate::parser::{EIndex, Expr, TIndex, Binop};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ByteCode {
@@ -12,6 +12,18 @@ pub enum ByteCode {
     Sub,
     Mul,
     Div,
+}
+
+impl From<Binop> for ByteCode {
+    fn from(op: Binop) -> Self {
+        match op {
+            Binop::Plus => ByteCode::Add,
+            Binop::Minus => ByteCode::Sub,
+            Binop::Mul => ByteCode::Mul,
+            Binop::Div => ByteCode::Div,
+            Binop::Eq => unimplemented!(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -86,17 +98,11 @@ impl Compiler {
         self.mark_visited(i);
     }
 
-    fn compile_binop(&mut self, op: TIndex, lhs: EIndex, rhs: EIndex) {
+    fn compile_binop(&mut self, op: Binop, lhs: EIndex, rhs: EIndex) {
         self.compile_expr(lhs);
         self.compile_expr(rhs);
         // FIXME:
-        let bc_op = match Token::Plus {
-            Token::Plus => ByteCode::Add,
-            Token::Minus => ByteCode::Sub,
-            Token::Mul => ByteCode::Mul,
-            Token::Div => ByteCode::Div,
-            _ => unimplemented!(),
-        };
+        let bc_op = ByteCode::from(op);
         self.emit(bc_op);
     }
 
