@@ -4,16 +4,24 @@ use crate::parser::{EIndex, Expr, TIndex};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ByteCode {
+    Nop,
     Push(u64),
+    Jump(u32),
+    JumpIfZero(u32),
     Add,
     Sub,
     Mul,
     Div,
 }
 
+#[derive(Debug)]
+pub struct Chunk {
+    pub ops: Vec<ByteCode>,
+}
+
 pub struct Compiler<'a> {
     ast: Ast<'a>,
-    bytecode: Vec<ByteCode>,
+    bytecode: Chunk,
     expr_i: usize,
     visited: Vec<bool>,
 }
@@ -23,7 +31,9 @@ impl<'a> Compiler<'a> {
         let visited = vec![false; ast.exprs.len()];
         Self {
             ast,
-            bytecode: Vec::new(),
+            bytecode: Chunk {
+                ops: Vec::new(),
+            },
             expr_i: 0,
             visited,
         }
@@ -41,22 +51,22 @@ impl<'a> Compiler<'a> {
             return None;
         }
         let expr = self.ast.exprs[self.expr_i];
-        self.visit(self.expr_i);
+        self.mark_visited(self.expr_i);
         self.expr_i += 1;
         Some(expr)
     }
 
-    fn visit(&mut self, expr_i: usize) {
+    fn mark_visited(&mut self, expr_i: usize) {
         self.visited[expr_i] = true;
     }
 
     pub fn compile(&mut self) {
         while let Some(expr) = self.next_expr() {
-            self.compile_expr(expr);
+            self._compile_expr(expr);
         }
     }
 
-    fn compile_expr(&mut self, expr: Expr) {
+    fn _compile_expr(&mut self, expr: Expr) {
         match expr {
             Expr::Int(i) => {
                 self.compile_int(i);
@@ -64,13 +74,21 @@ impl<'a> Compiler<'a> {
             Expr::Binop { op, lhs, rhs } => {
                 self.compile_binop(op, lhs, rhs);
             }
-            _ => unimplemented!(),
+            Expr::If { cond, branch_true, branch_false } => {
+                self.compile_if(cond, branch_true, branch_false);
+            }
+            _ => unimplemented!("Expr: {:?} not implemented", expr),
         }
     }
 
+    fn compile_expr(&mut self, i: EIndex) {
+        self._compile_expr(self.ast.exprs[i]);
+        self.mark_visited(i);
+    }
+
     fn compile_binop(&mut self, op: TIndex, lhs: EIndex, rhs: EIndex) {
-        self.compile_expr(self.ast.exprs[lhs]);
-        self.compile_expr(self.ast.exprs[rhs]);
+        self.compile_expr(lhs);
+        self.compile_expr(rhs);
         let bc_op = match self.ast.tokens[op] {
             Token::Plus => ByteCode::Add,
             Token::Minus => ByteCode::Sub,
@@ -78,13 +96,54 @@ impl<'a> Compiler<'a> {
             Token::Div => ByteCode::Div,
             _ => unimplemented!(),
         };
-        self.push(bc_op);
-        self.visit(lhs);
-        self.visit(rhs);
+        self.emit(bc_op);
     }
 
-    fn push(&mut self, bc: ByteCode) {
-        self.bytecode.push(bc);
+    fn compile_if(&mut self, cond: EIndex, branch_true: EIndex, branch_false: EIndex) {
+        self.compile_expr(cond);
+
+        let jmp_true_i = self.init_jmp();
+        let jmp_else_i = self.init_jmp();
+
+        self.end_jmp_if_zero(jmp_true_i);
+        self.compile_expr(branch_true);
+
+        let jmp_end_i = self.reserve();
+
+        self.end_jmp(jmp_else_i);
+        self.compile_expr(branch_false);
+
+        self.end_jmp(jmp_end_i);
+    }
+
+    fn set(&mut self, i: usize, bc: ByteCode) {
+        self.bytecode.ops[i] = bc;
+    }
+
+    fn emit(&mut self, bc: ByteCode) {
+        self.bytecode.ops.push(bc);
+    }
+
+    fn reserve(&mut self) -> usize {
+        let i = self.bytecode.ops.len();
+        self.emit(ByteCode::Nop);
+        return i;
+    }
+
+    fn init_jmp(&mut self) -> usize {
+        return self.reserve();
+    }
+
+    fn end_jmp_if_zero(&mut self, jmp_i: usize) {
+        let len = self.bytecode.ops.len();
+        let jump_offset = len as u32;
+        self.set(jmp_i, ByteCode::JumpIfZero(jump_offset));
+    }
+
+    fn end_jmp(&mut self, jmp_i: usize) {
+        let len = self.bytecode.ops.len();
+        let jump_offset = len as u32;
+        self.set(jmp_i, ByteCode::Jump(jump_offset));
     }
 
     fn parse_int(&self, tok_i: TIndex) -> u64 {
@@ -94,10 +153,10 @@ impl<'a> Compiler<'a> {
 
     fn compile_int(&mut self, tok_i: TIndex) {
         let val = self.parse_int(tok_i);
-        self.push(ByteCode::Push(val));
+        self.emit(ByteCode::Push(val));
     }
 
-    pub fn bytecode(&self) -> &Vec<ByteCode> {
+    pub fn bytecode(&self) -> &Chunk {
         &self.bytecode
     }
 }
@@ -105,7 +164,7 @@ impl<'a> Compiler<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::tests::{assert_matches, let_assert_matches};
+    use crate::parser::tests::assert_matches;
 
     fn compile(contents: &str) -> Compiler {
         let parser = crate::parser::Parser::new(contents);
@@ -120,11 +179,11 @@ mod tests {
             $(
                 #[allow(unused_assignments)]
                 {
-                    assert_matches!($bytecode[i], $ops);
+                    assert_matches!($bytecode.ops[i], $ops);
                     i += 1;
                 }
             )*
-            assert_eq!($bytecode.len(), i, "expected {} ops, got {}. Extra: {:?}", i, $bytecode.len(), &$bytecode[i..]);
+            assert_eq!($bytecode.ops.len(), i, "expected {} ops, got {}. Extra: {:?}", i, $bytecode.ops.len(), &$bytecode.ops[i..]);
         };
     }
 
@@ -190,6 +249,24 @@ mod tests {
                 ByteCode::Push(7),
                 ByteCode::Push(8),
                 ByteCode::Div
+            ]
+        );
+    }
+
+    #[test]
+    fn if_expr() {
+        let contents = "(if 1 2 3)";
+        let compiler = compile(contents);
+        dbg!(&compiler.bytecode.ops);
+        assert_bytecode_matches!(
+            compiler.bytecode,
+            [
+                ByteCode::Push(1),
+                ByteCode::JumpIfZero(3),
+                ByteCode::Jump(5),
+                ByteCode::Push(2),
+                ByteCode::Jump(6),
+                ByteCode::Push(3)
             ]
         );
     }
