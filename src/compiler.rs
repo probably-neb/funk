@@ -1,4 +1,4 @@
-use crate::ast::Ast;
+use crate::ast::{Ast, DIndex};
 use crate::lexer::Token;
 use crate::parser::{EIndex, Expr, TIndex};
 
@@ -19,15 +19,15 @@ pub struct Chunk {
     pub ops: Vec<ByteCode>,
 }
 
-pub struct Compiler<'a> {
-    ast: Ast<'a>,
+pub struct Compiler {
+    ast: Ast,
     bytecode: Chunk,
     expr_i: usize,
     visited: Vec<bool>,
 }
 
-impl<'a> Compiler<'a> {
-    pub fn new(ast: Ast<'a>) -> Self {
+impl Compiler {
+    pub fn new(ast: Ast) -> Self {
         let visited = vec![false; ast.exprs.len()];
         Self {
             ast,
@@ -89,7 +89,8 @@ impl<'a> Compiler<'a> {
     fn compile_binop(&mut self, op: TIndex, lhs: EIndex, rhs: EIndex) {
         self.compile_expr(lhs);
         self.compile_expr(rhs);
-        let bc_op = match self.ast.tokens[op] {
+        // FIXME:
+        let bc_op = match Token::Plus {
             Token::Plus => ByteCode::Add,
             Token::Minus => ByteCode::Sub,
             Token::Mul => ByteCode::Mul,
@@ -146,13 +147,8 @@ impl<'a> Compiler<'a> {
         self.set(jmp_i, ByteCode::Jump(jump_offset));
     }
 
-    fn parse_int(&self, tok_i: TIndex) -> u64 {
-        let val = self.ast.token_slice(tok_i);
-        return val.parse().unwrap();
-    }
-
-    fn compile_int(&mut self, tok_i: TIndex) {
-        let val = self.parse_int(tok_i);
+    fn compile_int(&mut self, di: DIndex) {
+        let val: u64 = self.ast.get_const(di);
         self.emit(ByteCode::Push(val));
     }
 

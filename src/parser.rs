@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 
-use crate::{lexer::{self, Token, Lexer}, ast::{Ast, DataPool, DIndex}};
+use crate::{
+    ast::{Ast, DIndex, DataPool},
+    lexer::{self, Lexer, Token},
+};
 
 /// Expression index
 pub type EIndex = usize;
@@ -13,7 +16,7 @@ pub struct Parser<'a> {
     tokens: Vec<Token>,
     tok_i: EIndex,
     exprs: Vec<Expr>,
-    data: DataPool
+    data: DataPool,
 }
 
 #[allow(dead_code)]
@@ -22,6 +25,7 @@ pub enum Expr {
     Nop,
     Int(DIndex),
     Ident(DIndex),
+    String(DIndex),
     If {
         cond: EIndex,
         branch_true: EIndex,
@@ -32,7 +36,6 @@ pub enum Expr {
         lhs: EIndex,
         rhs: EIndex,
     },
-    String(DIndex),
     FunDef {
         name: DIndex,
         args: EIndex,
@@ -69,13 +72,9 @@ impl<'a> Parser<'a> {
         Parser::_new(Lexer::new(contents))
     }
 
-    pub fn parse(mut self) -> Result<crate::ast::Ast<'a>> {
+    pub fn parse(mut self) -> Result<crate::ast::Ast> {
         self._parse()?;
-        Ok(Ast::new(
-            self.exprs,
-            self.tokens,
-            self.lxr.input(),
-        ))
+        Ok(Ast::new(self.exprs, self.data))
     }
 
     fn _parse(&mut self) -> Result<()> {
@@ -115,7 +114,7 @@ impl<'a> Parser<'a> {
             tok = self.tok()?;
         }
         let expr = match tok {
-            Token::Int(_) => Ok(Expr::Int(self.tok_i)),
+            Token::Int(range) => Ok(Expr::Int(self.intern_int(range))),
             Token::Ident(range) => Ok(Expr::Ident(self.intern_str(range))),
             Token::String(range) => Ok(Expr::String(self.intern_str(range))),
             Token::If => return Some(self.if_expr()),
@@ -132,9 +131,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn intern_int(&mut self, range: lexer::Range) -> DIndex {
+        let bytes = self.lxr.slice(&range);
+        let val = unsafe { std::str::from_utf8_unchecked(bytes) }
+            // TODO: support alternative int sizes
+            .parse::<u64>()
+            .expect("invalid int");
+        return self.data.put(&val);
+    }
+
     fn intern_str(&mut self, range: lexer::Range) -> DIndex {
         let str = self.lxr.slice(&range);
-        return self.data.write(str);
+        return self.data.put(str);
     }
 
     fn binop_expr(&mut self, op: TIndex) -> Result<EIndex> {
@@ -188,10 +196,7 @@ impl<'a> Parser<'a> {
         while let Some(Token::Ident(range)) = self.tok() {
             num += 1;
             let name = self.intern_str(range);
-            self.push(Expr::FunArg {
-                name,
-                len: num,
-            });
+            self.push(Expr::FunArg { name, len: num });
         }
         self.exprs[first] = Expr::FunArg {
             name: first_name,
@@ -200,7 +205,6 @@ impl<'a> Parser<'a> {
         assert_eq!(self.tokens[self.tok_i], Token::RParen);
         Ok(first)
     }
-
 }
 
 // NOTE: something is detecting variables declared in test macros as unused
@@ -218,7 +222,6 @@ pub mod tests {
         parser._parse()?;
         Ok(parser)
     }
-
 
     #[cfg(test)]
     macro_rules! assert_matches {
@@ -277,31 +280,24 @@ pub mod tests {
         let contents = "(= 10 10)";
         let parser = parse(contents).expect("parser error");
         assert_eq!(parser.tokens.len(), 5);
-        assert_eq!( parser.exprs[0], Expr::Binop { op: 1, lhs: 1, rhs: 2 });
+        assert_eq!(
+            parser.exprs[0],
+            Expr::Binop {
+                op: 1,
+                lhs: 1,
+                rhs: 2
+            }
+        );
     }
 
     #[test]
     fn eq_with_sub_expr() {
         let contents = "(= (* 2 2) 4)";
         let parser = parse(contents).expect("parser error");
-        let_assert_matches!(
-            parser.exprs[0],
-            Expr::Binop {
-                op,
-                lhs: 1,
-                rhs: 4
-            }
-        );
+        let_assert_matches!(parser.exprs[0], Expr::Binop { op, lhs: 1, rhs: 4 });
         assert_tok_is!(parser, op, Token::Eq);
 
-        let_assert_matches!(
-            parser.exprs[1],
-            Expr::Binop {
-                op,
-                lhs: 2,
-                rhs: 3
-            }
-        );
+        let_assert_matches!(parser.exprs[1], Expr::Binop { op, lhs: 2, rhs: 3 });
         assert_tok_is!(parser, op, Token::Mul);
     }
 
@@ -310,7 +306,7 @@ pub mod tests {
         let contents = "(* 10 10)";
         let parser = parse(contents).expect("parser error");
         assert_eq!(parser.tokens.len(), 5);
-        let_assert_matches!(parser.exprs[0], Expr::Binop{op, lhs: 1, rhs: 2});
+        let_assert_matches!(parser.exprs[0], Expr::Binop { op, lhs: 1, rhs: 2 });
         assert_tok_is!(parser, op, Token::Mul);
     }
 
@@ -319,13 +315,22 @@ pub mod tests {
         let contents = r#"(if (= 4 4) "yes" "no")"#;
         let parser = parse(contents).expect("parser error");
 
-        let_assert_matches!(parser.exprs[0], Expr::If {
+        let_assert_matches!(
+            parser.exprs[0],
+            Expr::If {
                 cond,
                 branch_true,
                 branch_false,
             }
         );
-        assert_matches!(parser.exprs[cond], Expr::Binop { op: _, lhs: _, rhs: _ });
+        assert_matches!(
+            parser.exprs[cond],
+            Expr::Binop {
+                op: _,
+                lhs: _,
+                rhs: _
+            }
+        );
         assert_matches!(parser.exprs[branch_true], Expr::String(_));
         assert_matches!(parser.exprs[branch_false], Expr::String(_));
     }
@@ -336,13 +341,7 @@ pub mod tests {
         let mut parser = Parser::new(contents);
         let args = parser.fun_args().expect("parser error");
         assert_eq!(args, 0);
-        assert_matches!(
-            parser.exprs[0],
-            Expr::FunArg {
-                name,
-                len: 1
-            }
-        );
+        assert_matches!(parser.exprs[0], Expr::FunArg { name, len: 1 });
         assert_matches!(parser.exprs[1], Expr::FunArg { name, len: 1 });
     }
 
@@ -350,62 +349,44 @@ pub mod tests {
     fn fun_expr() {
         let contents = "(fun foo (a b) (+ a b))";
         let parser = parse(contents).expect("parser error");
-        let_assert_matches!(
-            parser.exprs[0],
-            Expr::FunDef {
-                name,
-                args,
-                body
+        let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
+        assert_matches!(
+            parser.exprs[body],
+            Expr::Binop {
+                op: _,
+                lhs: _,
+                rhs: _
             }
         );
-        assert_matches!( parser.exprs[body], Expr::Binop { op: _, lhs: _, rhs: _ });
     }
 
     #[test]
     fn ident_interned() {
         let contents = "(+ a b)";
         let parser = parse(contents).expect("parser error");
-        let_assert_matches!(parser.exprs[0], Expr::Binop { op, lhs, rhs});
+        let_assert_matches!(parser.exprs[0], Expr::Binop { op, lhs, rhs });
         let_assert_matches!(parser.exprs[lhs], Expr::Ident(a));
         let_assert_matches!(parser.exprs[rhs], Expr::Ident(b));
-        assert_eq!(parser.data.read_ref::<str>(a), "a");
-        assert_eq!(parser.data.read_ref::<str>(b), "b");
+        assert_eq!(parser.data.get_ref::<str>(a), "a");
+        assert_eq!(parser.data.get_ref::<str>(b), "b");
     }
 
     #[test]
     fn fun_name_interned() {
         let contents = "(fun foo (foo bar) (+ foo bar))";
         let parser = parse(contents).expect("parser error");
-        let_assert_matches!(
-            parser.exprs[0],
-            Expr::FunDef { name, args, body }
-        );
-        assert_eq!(parser.data.read_ref::<str>(name), "foo");
+        let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
+        assert_eq!(parser.data.get_ref::<str>(name), "foo");
     }
 
     #[test]
     fn fun_arg_interned() {
         let contents = "(fun foo (foo bar) (+ foo bar))";
         let parser = parse(contents).expect("parser error");
-        let_assert_matches!(
-            parser.exprs[0],
-            Expr::FunDef { name, args, body }
-        );
-        let_assert_matches!(
-            parser.exprs[args],
-            Expr::FunArg {
-            name: foo,
-            len: 1
-            }
-        );
-        let_assert_matches!(
-            parser.exprs[args + 1],
-            Expr::FunArg {
-                name: bar,
-                len: 1
-            }
-        );
-        assert_eq!(parser.data.read_ref::<str>(foo), "foo");
-        assert_eq!(parser.data.read_ref::<str>(bar), "bar");
+        let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
+        let_assert_matches!(parser.exprs[args], Expr::FunArg { name: foo, len: 1 });
+        let_assert_matches!(parser.exprs[args + 1], Expr::FunArg { name: bar, len: 1 });
+        assert_eq!(parser.data.get_ref::<str>(foo), "foo");
+        assert_eq!(parser.data.get_ref::<str>(bar), "bar");
     }
 }
