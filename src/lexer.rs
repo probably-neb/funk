@@ -1,5 +1,6 @@
 use anyhow::Result;
-type Range = (usize, usize);
+
+pub type Range = (usize, usize);
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Token {

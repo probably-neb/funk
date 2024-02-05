@@ -37,6 +37,8 @@ impl<'a> Ast<'a> {
 
 type Pool = Vec<u8>;
 
+pub type DIndex = usize;
+
 pub struct DataPool {
     pool: Pool
 }
@@ -48,17 +50,17 @@ impl DataPool {
         }
     }
 
-    pub fn write<T: WriteBytes>(&mut self, val: &T) -> usize {
+    pub fn write<T: WriteBytes + ?Sized>(&mut self, val: &T) -> DIndex {
         let i = self.pool.len();
         WriteBytes::write(val, &mut self.pool);
         return i;
     }
 
-    pub fn read<T: ReadFromBytes>(&mut self, i: usize) -> T {
+    pub fn read<T: ReadFromBytes>(&self, i: DIndex) -> T {
         return ReadFromBytes::read(&self.pool[i..]);
     }
 
-    pub fn read_ref<'a, T: ReadFromBytesRef<'a> + ?Sized>(&'a mut self, i: usize) -> &'a T {
+    pub fn read_ref<'a, T: ReadFromBytesRef<'a> + ?Sized>(&'a self, i: DIndex) -> &'a T {
         return ReadFromBytesRef::read(&self.pool[i..]);
     }
 }
@@ -92,22 +94,34 @@ impl ReadFromBytes for u32 {
 
 impl WriteBytes for &str {
     fn write(&self, out: &mut Pool) {
+        let bytes = self.as_bytes();
+        WriteBytes::write(bytes, out);
+    }
+}
+
+impl<'a> ReadFromBytesRef<'a> for str {
+    fn read(bytes: &'a [u8]) -> &'a str {
+        let str_bytes: &[u8] = ReadFromBytesRef::read(bytes);
+        return std::str::from_utf8(str_bytes).expect("valid utf8");
+    }
+}
+
+impl WriteBytes for [u8] {
+    fn write(&self, out: &mut Pool) {
         let len = self.len() as u32;
 
         let out_len = 4 + len;
         out.try_reserve(out_len as usize).expect("pool reserve failed");
 
         WriteBytes::write(&len, out);
-        let bytes = self.as_bytes();
-        out.extend_from_slice(bytes);
+        out.extend_from_slice(&self);
     }
 }
 
-impl<'a> ReadFromBytesRef<'a> for str {
-    fn read(bytes: &'a [u8]) -> &'a str {
+impl<'a> ReadFromBytesRef<'a> for [u8] {
+    fn read(bytes: &'a [u8]) -> &'a [u8] {
         let len: u32 = ReadFromBytes::read(&bytes[0..4]);
-        let str_bytes = &bytes[4..4 + len as usize];
-        return std::str::from_utf8(str_bytes).expect("valid utf8");
+        return &bytes[4..4 + len as usize];
     }
 }
 
