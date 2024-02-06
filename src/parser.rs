@@ -14,7 +14,7 @@ pub type TIndex = usize;
 pub struct Parser<'a> {
     lxr: Lexer<'a>,
     tokens: Vec<Token>,
-    tok_i: EIndex,
+    tok_i: TIndex,
     exprs: Vec<Expr>,
     data: DataPool,
 }
@@ -45,6 +45,10 @@ pub enum Expr {
         name: DIndex,
         len: u8,
     },
+    Bind {
+        name: DIndex,
+        value: EIndex,
+    }
 }
 
 macro_rules! eat {
@@ -119,6 +123,7 @@ impl<'a> Parser<'a> {
             Token::String(range) => Ok(Expr::String(self.intern_str(range))),
             Token::If => return Some(self.if_expr()),
             Token::Fun => return Some(self.fun_expr()),
+            Token::Let => return Some(self.bind_expr()),
             Token::Eq | Token::Mul | Token::Plus | Token::Minus | Token::Div => {
                 return Some(self.binop_expr(Binop::from(tok)))
             }
@@ -205,6 +210,18 @@ impl<'a> Parser<'a> {
         assert_eq!(self.tokens[self.tok_i], Token::RParen);
         Ok(first)
     }
+
+    fn bind_expr(&mut self) -> Result<EIndex> {
+        let bind_i = self.reserve();
+        let Token::Ident(range) = eat!(self, Token::Ident(_))? else {
+            unreachable!()
+        };
+        let name = self.intern_str(range);
+        let value = self.expr().unwrap()?;
+        eat!(self, Token::RParen)?;
+        self.exprs[bind_i] = Expr::Bind { name, value };
+        Ok(bind_i)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -281,12 +298,6 @@ pub mod tests {
         };
     }
     pub(crate) use let_assert_matches;
-
-    macro_rules! assert_tok_is {
-        ($parser:expr, $i:ident, $tok:pat) => {
-            assert_matches!($parser.tokens[$i], $tok)
-        };
-    }
 
     #[test]
     fn literal() {
@@ -407,5 +418,15 @@ pub mod tests {
         let_assert_matches!(parser.exprs[args + 1], Expr::FunArg { name: bar, len: 1 });
         assert_eq!(parser.data.get_ref::<str>(foo), "foo");
         assert_eq!(parser.data.get_ref::<str>(bar), "bar");
+    }
+
+    #[test]
+    fn var_bind() {
+        let contents = "(let a 1)";
+        let parser = parse(contents).expect("parser error");
+        let_assert_matches!(parser.exprs[0], Expr::Bind { name, value});
+        assert_eq!(parser.data.get_ref::<str>(name), "a");
+        let_assert_matches!(parser.exprs[value], Expr::Int(int));
+        assert_eq!(parser.data.get::<u64>(int), 1);
     }
 }

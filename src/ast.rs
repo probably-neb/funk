@@ -1,4 +1,3 @@
-use crate::lexer;
 use crate::parser;
 
 pub struct Ast {

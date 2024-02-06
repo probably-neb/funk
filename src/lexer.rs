@@ -30,6 +30,7 @@ pub enum Token {
     Eof,
     If,
     Fun,
+    Let
 }
 
 pub struct Lexer<'a> {
@@ -109,6 +110,7 @@ impl<'a> Lexer<'a> {
             b"false" => Token::False,
             b"if" => Token::If,
             b"fun" => Token::Fun,
+            b"let" => Token::Let,
             _ => Token::Ident(range),
         };
     }
@@ -207,51 +209,48 @@ impl<'a> Lexer<'a> {
         return std::str::from_utf8(slice).unwrap();
     }
 
-    pub fn repr(&self, token: &Token) -> String {
-        macro_rules! label {
-            ($label:literal, $range:expr) => {
-                format!("{}({})", $label, self.as_str($range))
-            };
-        }
-        macro_rules! lit {
-            ($value:literal) => {
-                $value.to_string()
-            };
-        }
-        match token {
-            Token::Ident(range) => label!("Ident", range),
-            // Token::Punct(pos) => label!("Punct", &(*pos, *pos + 1)),
-            Token::Int(range) => label!("Int", range),
-            Token::Float(range) => label!("Float", range),
-            Token::String(range) => label!("String", range),
-            Token::Char(pos) => label!("Char", &(*pos, *pos + 1)),
-            Token::Fun => lit!("fun"),
-            Token::If => lit!("if"),
-            Token::True => lit!("true"),
-            Token::False => lit!("false"),
-            Token::Lt => lit!("<"),
-            Token::LtEq => lit!("<="),
-            Token::Gt => lit!(">"),
-            Token::GtEq => lit!(">="),
-            Token::Eq => lit!("="),
-            Token::DblEq => lit!("=="),
-            Token::Plus => lit!("+"),
-            Token::Minus => lit!("-"),
-            Token::Mul => lit!("*"),
-            Token::Div => lit!("/"),
-            Token::LParen => lit!("("),
-            Token::RParen => lit!(")"),
-            Token::LSquirly => lit!("{"),
-            Token::RSquirly => lit!("}"),
-            Token::LBrace => lit!("["),
-            Token::RBrace => lit!("]"),
-            Token::Eof => lit!("EOF"),
-        }
-    }
-
-    pub fn input(&self) -> &'a [u8] {
-        self.input
-    }
+    // pub fn repr(&self, token: &Token) -> String {
+    //     macro_rules! label {
+    //         ($label:literal, $range:expr) => {
+    //             format!("{}({})", $label, self.as_str($range))
+    //         };
+    //     }
+    //     macro_rules! lit {
+    //         ($value:literal) => {
+    //             $value.to_string()
+    //         };
+    //     }
+    //     match token {
+    //         Token::Ident(range) => label!("Ident", range),
+    //         // Token::Punct(pos) => label!("Punct", &(*pos, *pos + 1)),
+    //         Token::Int(range) => label!("Int", range),
+    //         Token::Float(range) => label!("Float", range),
+    //         Token::String(range) => label!("String", range),
+    //         Token::Char(pos) => label!("Char", &(*pos, *pos + 1)),
+    //         Token::Fun => lit!("fun"),
+    //         Token::If => lit!("if"),
+    //         Token::True => lit!("true"),
+    //         Token::False => lit!("false"),
+    //         Token::Let => lit!("let"),
+    //         Token::Lt => lit!("<"),
+    //         Token::LtEq => lit!("<="),
+    //         Token::Gt => lit!(">"),
+    //         Token::GtEq => lit!(">="),
+    //         Token::Eq => lit!("="),
+    //         Token::DblEq => lit!("=="),
+    //         Token::Plus => lit!("+"),
+    //         Token::Minus => lit!("-"),
+    //         Token::Mul => lit!("*"),
+    //         Token::Div => lit!("/"),
+    //         Token::LParen => lit!("("),
+    //         Token::RParen => lit!(")"),
+    //         Token::LSquirly => lit!("{"),
+    //         Token::RSquirly => lit!("}"),
+    //         Token::LBrace => lit!("["),
+    //         Token::RBrace => lit!("]"),
+    //         Token::Eof => lit!("EOF"),
+    //     }
+    // }
 }
 
 #[cfg(test)]
@@ -389,5 +388,12 @@ pub mod tests {
             _ => unreachable!("expected float, got {:?}", tok),
         };
         assert_eq!(lex.as_str(&range), "1.0e10");
+    }
+
+    #[test]
+    fn let_builtin() {
+        let contents = "let";
+        let mut lex = Lexer::new(contents);
+        assert_eq!(lex.next_token().unwrap(), Token::Let);
     }
 }

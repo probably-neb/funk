@@ -1,6 +1,5 @@
 use crate::ast::{Ast, DIndex};
-use crate::lexer::Token;
-use crate::parser::{EIndex, Expr, TIndex, Binop};
+use crate::parser::{EIndex, Expr, Binop};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ByteCode {
