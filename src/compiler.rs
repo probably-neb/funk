@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::ast::{Ast, DIndex};
 use crate::parser::{EIndex, Expr, Binop};
 
@@ -7,6 +9,8 @@ pub enum ByteCode {
     Push(u64),
     Jump(u32),
     JumpIfZero(u32),
+    // (index)
+    Store(u32),
     Add,
     Sub,
     Mul,
@@ -36,6 +40,7 @@ pub struct Compiler {
     bytecode: Chunk,
     expr_i: usize,
     visited: Vec<bool>,
+    name_map: HashMap<DIndex, u32>,
 }
 
 impl Compiler {
@@ -48,6 +53,7 @@ impl Compiler {
             },
             expr_i: 0,
             visited,
+            name_map: HashMap::new(),
         }
     }
 
@@ -91,6 +97,9 @@ impl Compiler {
             Expr::If { cond, branch_true, branch_false } => {
                 self.compile_if(cond, branch_true, branch_false);
             }
+            Expr::Bind {name, value} => {
+                self.compile_bind(name, value);
+            }
             _ => unimplemented!("Expr: {:?} not implemented", expr),
         }
     }
@@ -123,6 +132,18 @@ impl Compiler {
         self.compile_expr(branch_false);
 
         self.end_jmp(jmp_end_i);
+    }
+
+    fn compile_bind(&mut self, name: DIndex, value: EIndex) {
+        self.compile_expr(value);
+        let i = self.ident_i(name);
+        self.emit(ByteCode::Store(i));
+    }
+
+    fn ident_i(&mut self, name: DIndex) -> u32 {
+        let next = self.name_map.len() as u32;
+        let val = self.name_map.entry(name).or_insert(next);
+        return *val;
     }
 
     fn set(&mut self, i: usize, bc: ByteCode) {
@@ -188,6 +209,14 @@ mod tests {
                 }
             )*
             assert_eq!($bytecode.ops.len(), i, "expected {} ops, got {}. Extra: {:?}", i, $bytecode.ops.len(), &$bytecode.ops[i..]);
+        };
+    }
+
+    macro_rules! assert_compiles_to {
+        ($contents:literal, [$($ops:pat),*]) => {
+            let contents = $contents;
+            let compiler = compile(contents);
+            assert_bytecode_matches!(compiler.bytecode, [$($ops),*]);
         };
     }
 
@@ -271,6 +300,17 @@ mod tests {
                 ByteCode::Push(2),
                 ByteCode::Jump(6),
                 ByteCode::Push(3)
+            ]
+        );
+    }
+
+    #[test]
+    fn let_bind() {
+        assert_compiles_to!(
+            "(let x 1)",
+            [
+                ByteCode::Push(1),
+                ByteCode::Store(0)
             ]
         );
     }

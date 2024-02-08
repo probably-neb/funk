@@ -13,6 +13,7 @@ struct Runtime<'chunk> {
     chunk: &'chunk Chunk,
     stack: Stack,
     pc: usize,
+    vars: Vec<i64>,
 }
 
 impl<'chunk> Runtime<'chunk> {
@@ -21,6 +22,7 @@ impl<'chunk> Runtime<'chunk> {
             chunk,
             stack: Vec::new(),
             pc: 0,
+            vars: Vec::new(),
         }
     }
 
@@ -51,7 +53,8 @@ impl<'chunk> Runtime<'chunk> {
                 }
                 ByteCode::JumpIfZero(addr) => self.exec_jmpiz(addr)?,
                 ByteCode::Jump(addr) => self.exec_jmp(addr)?,
-                _ => unimplemented!(),
+                ByteCode::Store(idx) => self.exec_store(idx)?,
+                ByteCode::Nop => unreachable!("nop should be removed by compiler"),
             }
         }
         Ok(self.stack.to_owned())
@@ -79,12 +82,17 @@ impl<'chunk> Runtime<'chunk> {
             ByteCode::Mul => lhs * rhs,
             ByteCode::Div => lhs / rhs,
             // FIXME: have JMPT and JMPF, zero as true is confusing and
-            // results in (!= as i64) being the implementation of equals
-            ByteCode::Eq => dbg!((lhs != rhs) as i64),
+            // results in (1 - ...) being the implementation of equals
+            ByteCode::Eq => 1 - ((lhs == rhs) as i64),
             _ => unimplemented!("op: {:?} not implemented", bc),
         };
         dbg!(bc, lhs, rhs, res);
         self.stack.push(res);
+        Ok(())
+    }
+    fn exec_store(&mut self, idx: u32) -> Result<()> {
+        let val = self.stack.pop().context("stack underflow")?;
+        self.vars[idx as usize] = val;
         Ok(())
     }
 }
