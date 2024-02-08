@@ -45,7 +45,8 @@ impl<'chunk> Runtime<'chunk> {
                 ByteCode::Add
                 | ByteCode::Sub
                 | ByteCode::Mul
-                | ByteCode::Div => {
+                | ByteCode::Div
+                | ByteCode::Eq => {
                     self.exec_binop(bc)?;
                 }
                 ByteCode::JumpIfZero(addr) => self.exec_jmpiz(addr)?,
@@ -77,8 +78,12 @@ impl<'chunk> Runtime<'chunk> {
             ByteCode::Sub => lhs - rhs,
             ByteCode::Mul => lhs * rhs,
             ByteCode::Div => lhs / rhs,
-            _ => unimplemented!(),
+            // FIXME: have JMPT and JMPF, zero as true is confusing and
+            // results in (!= as i64) being the implementation of equals
+            ByteCode::Eq => dbg!((lhs != rhs) as i64),
+            _ => unimplemented!("op: {:?} not implemented", bc),
         };
+        dbg!(bc, lhs, rhs, res);
         self.stack.push(res);
         Ok(())
     }
@@ -109,6 +114,12 @@ mod test {
     #[test]
     fn jump_if_zero_not_taken() {
         let stack = run_src("(if (- 1 2) 3 4)");
+        assert_eq!(stack, vec![4]);
+    }
+
+    #[test]
+    fn eq() {
+        let stack = run_src("(if (= 1 2) 3 4)");
         assert_eq!(stack, vec![4]);
     }
 }

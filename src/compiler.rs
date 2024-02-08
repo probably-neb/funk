@@ -11,6 +11,7 @@ pub enum ByteCode {
     Sub,
     Mul,
     Div,
+    Eq,
 }
 
 impl From<Binop> for ByteCode {
@@ -20,7 +21,7 @@ impl From<Binop> for ByteCode {
             Binop::Minus => ByteCode::Sub,
             Binop::Mul => ByteCode::Mul,
             Binop::Div => ByteCode::Div,
-            Binop::Eq => unimplemented!(),
+            Binop::Eq => ByteCode::Eq,
         }
     }
 }
@@ -69,6 +70,8 @@ impl Compiler {
 
     fn mark_visited(&mut self, expr_i: usize) {
         self.visited[expr_i] = true;
+        dbg!(&self.visited);
+        dbg!(&self.ast.exprs);
     }
 
     pub fn compile(&mut self) {
