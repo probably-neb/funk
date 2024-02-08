@@ -1,3 +1,5 @@
+use std::{collections::{HashMap, hash_map::DefaultHasher}, hash::{Hash, Hasher}};
+
 use crate::parser;
 
 pub struct Ast {
@@ -19,12 +21,44 @@ impl Ast {
     }
 }
 
+type ByteMapHasher = DefaultHasher;
+
+// Wraps a HashMap<u64, DIndex> to use byte slices as keys
+// by hashing the byte slice and using the resulting u64
+// as the key
+// prevents needing lifetimes everywhere
+struct ByteHashMap {
+    map: HashMap<u64, DIndex>
+}
+
+impl ByteHashMap {
+    fn new() -> Self {
+        return Self { map: HashMap::new()};
+    }
+    fn hash(&self, key: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let hash = hasher.finish();
+        return hash;
+    }
+    fn insert(&mut self, key: &[u8], val: DIndex) {
+        let hash = self.hash(key);
+        self.map.insert(hash, val);
+    }
+    fn get(&self, key: &[u8]) -> Option<DIndex> {
+        let hash = self.hash(key);
+        return self.map.get(&hash).copied();
+    }
+}
+
 type Pool = Vec<u8>;
 
 pub type DIndex = usize;
 
 pub struct DataPool {
     pool: Pool,
+    tmp: Vec<u8>,
+    map: ByteHashMap
 }
 
 // TODO: implement hashing on write for deduplication
@@ -34,12 +68,18 @@ pub struct DataPool {
 //      strings and ints. i.e. have array of just u32's, and just string bytes
 impl DataPool {
     pub fn new() -> Self {
-        return Self { pool: vec![] };
+        return Self { pool: vec![], map: ByteHashMap::new(), tmp: vec![]};
     }
 
-    pub fn put<T: WriteBytes + ?Sized>(&mut self, val: &T) -> DIndex {
+    pub fn put<T: WriteBytes + ?Sized + Hash>(&mut self, val: &T) -> DIndex {
+        WriteBytes::write(val, &mut self.tmp);
+        if let Some(i) = self.map.get(&self.tmp) {
+            self.tmp.clear();
+            return i;
+        }
         let i = self.pool.len();
-        WriteBytes::write(val, &mut self.pool);
+        self.map.insert(&self.tmp, i);
+        self.pool.append(&mut self.tmp);
         return i;
     }
 
@@ -153,5 +193,23 @@ mod data_pool_tests {
     #[test]
     fn str() {
         test_read_write!(ref str, "hello world");
+    }
+
+    #[test]
+    fn interned() {
+        let mut pool = DataPool::new();
+        let i1 = pool.put(&"hello");
+        let i2 = pool.put(&"hello");
+        assert_eq!(i1, i2);
+    }
+
+    #[test]
+    fn interned_diff() {
+        let mut pool = DataPool::new();
+        let i1 = pool.put(&"foo");
+        let i2 = pool.put(&"bar");
+        assert_ne!(i1, i2);
+        assert_eq!("foo", pool.get_ref::<str>(i1));
+        assert_eq!("bar", pool.get_ref::<str>(i2));
     }
 }

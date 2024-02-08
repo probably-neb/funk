@@ -9,8 +9,8 @@ pub enum ByteCode {
     Push(u64),
     Jump(u32),
     JumpIfZero(u32),
-    // (index)
     Store(u32),
+    Load(u32),
     Add,
     Sub,
     Mul,
@@ -76,8 +76,6 @@ impl Compiler {
 
     fn mark_visited(&mut self, expr_i: usize) {
         self.visited[expr_i] = true;
-        dbg!(&self.visited);
-        dbg!(&self.ast.exprs);
     }
 
     pub fn compile(&mut self) {
@@ -99,6 +97,9 @@ impl Compiler {
             }
             Expr::Bind {name, value} => {
                 self.compile_bind(name, value);
+            }
+            Expr::Ident(name) => {
+                self.compile_load(name);
             }
             _ => unimplemented!("Expr: {:?} not implemented", expr),
         }
@@ -138,6 +139,12 @@ impl Compiler {
         self.compile_expr(value);
         let i = self.ident_i(name);
         self.emit(ByteCode::Store(i));
+    }
+
+    fn compile_load(&mut self, name: DIndex) {
+        // FIXME: ensure name exists
+        let i = self.ident_i(name);
+        self.emit(ByteCode::Load(i));
     }
 
     fn ident_i(&mut self, name: DIndex) -> u32 {
@@ -311,6 +318,18 @@ mod tests {
             [
                 ByteCode::Push(1),
                 ByteCode::Store(0)
+            ]
+        );
+    }
+
+    #[test]
+    fn let_bind_and_use() {
+        assert_compiles_to!(
+            "(let x 1) x",
+            [
+                ByteCode::Push(1),
+                ByteCode::Store(0),
+                ByteCode::Load(0)
             ]
         );
     }

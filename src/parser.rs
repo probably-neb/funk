@@ -48,7 +48,7 @@ pub enum Expr {
     Bind {
         name: DIndex,
         value: EIndex,
-    }
+    },
 }
 
 macro_rules! eat {
@@ -189,20 +189,25 @@ impl<'a> Parser<'a> {
     fn fun_args(&mut self) -> Result<EIndex> {
         let mut num = 0_u8;
         eat!(self, Token::LParen)?;
-        let (first, first_name) = match self.tok() {
-            Some(Token::RParen) => {
-                // FIXME: return None for no args
-                let emtpy_arg = self.push(Expr::FunArg { name: 0, len: 0 });
-                return Ok(emtpy_arg);
-            }
-            Some(Token::Ident(range)) => (self.reserve(), self.intern_str(range)),
-            _ => return Err(anyhow!("incomplete args")),
+        let Some(tok) = self.tok() else {
+            return Err(anyhow!("expected args got EOF"));
         };
+        if let Token::RParen = tok {
+            let emtpy_arg = self.push(Expr::FunArg { name: 0, len: 0 });
+            return Ok(emtpy_arg);
+        }
+        let Token::Ident(first_range) = tok else {
+            return Err(anyhow!("incomplete args"));
+        };
+        let first_name = self.intern_str(first_range);
+        let first = self.reserve();
+
         while let Some(Token::Ident(range)) = self.tok() {
             num += 1;
             let name = self.intern_str(range);
-            self.push(Expr::FunArg { name, len: num });
+            self.push(dbg!(Expr::FunArg { name, len: num }));
         }
+
         self.exprs[first] = Expr::FunArg {
             name: first_name,
             len: num,
@@ -416,6 +421,8 @@ pub mod tests {
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
         let_assert_matches!(parser.exprs[args], Expr::FunArg { name: foo, len: 1 });
         let_assert_matches!(parser.exprs[args + 1], Expr::FunArg { name: bar, len: 1 });
+        assert_ne!(foo, bar);
+        assert_ne!(parser.data.get_ref::<str>(foo), parser.data.get_ref::<str>(bar));
         assert_eq!(parser.data.get_ref::<str>(foo), "foo");
         assert_eq!(parser.data.get_ref::<str>(bar), "bar");
     }

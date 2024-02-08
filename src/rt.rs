@@ -54,6 +54,7 @@ impl<'chunk> Runtime<'chunk> {
                 ByteCode::JumpIfZero(addr) => self.exec_jmpiz(addr)?,
                 ByteCode::Jump(addr) => self.exec_jmp(addr)?,
                 ByteCode::Store(idx) => self.exec_store(idx)?,
+                ByteCode::Load(idx) => self.exec_load(idx)?,
                 ByteCode::Nop => unreachable!("nop should be removed by compiler"),
             }
         }
@@ -86,13 +87,27 @@ impl<'chunk> Runtime<'chunk> {
             ByteCode::Eq => 1 - ((lhs == rhs) as i64),
             _ => unimplemented!("op: {:?} not implemented", bc),
         };
-        dbg!(bc, lhs, rhs, res);
         self.stack.push(res);
         Ok(())
     }
+    fn ensure_var_cap(&mut self, idx: usize) {
+        if idx >= self.vars.len() {
+            // NOTE: assumes uninitialized vars won't be accessed
+            self.vars.resize(idx + 1, 0);
+        }
+    }
+
     fn exec_store(&mut self, idx: u32) -> Result<()> {
         let val = self.stack.pop().context("stack underflow")?;
-        self.vars[idx as usize] = val;
+        let idx = idx as usize;
+        self.ensure_var_cap(idx);
+        self.vars[idx] = val;
+        Ok(())
+    }
+
+    fn exec_load(&mut self, idx: u32) -> Result<()> {
+        let val = self.vars[idx as usize];
+        self.stack.push(val);
         Ok(())
     }
 }
@@ -130,4 +145,12 @@ mod test {
         let stack = run_src("(if (= 1 2) 3 4)");
         assert_eq!(stack, vec![4]);
     }
+
+    #[test]
+    fn use_var() {
+        let stack = run_src("(let x 1) (+ x 2)");
+        assert_eq!(stack, vec![3]);
+    }
+
+
 }
