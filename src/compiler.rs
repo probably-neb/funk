@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 
 use crate::ast::{Ast, DIndex};
@@ -14,6 +12,7 @@ pub enum ByteCode {
     JumpIfZero(u32),
     Store(u32),
     Load(u32),
+    Call(u32),
     Ret,
     Add,
     Sub,
@@ -23,7 +22,7 @@ pub enum ByteCode {
     Lt,
     LtEq,
     Gt,
-    GtEq
+    GtEq,
 }
 
 impl From<Binop> for ByteCode {
@@ -52,16 +51,8 @@ pub struct Compiler {
     bytecode: Chunk,
     expr_i: usize,
     visited: Vec<bool>,
-    name_map: HashMap<DIndex, u32>,
     scope_stack: ScopeStack,
-}
-
-macro_rules! new_sub_scope {
-    ($self:ident, $thing_to_do:expr) => {
-        $self.scope_stack.start_new();
-        $thing_to_do;
-        $self.scope_stack.end();
-    };
+    fun_map: FunMap,
 }
 
 impl Compiler {
@@ -72,8 +63,8 @@ impl Compiler {
             bytecode: Chunk { ops: Vec::new() },
             expr_i: 0,
             visited,
-            name_map: HashMap::new(),
             scope_stack: ScopeStack::new(),
+            fun_map: FunMap::new(),
         }
     }
 
@@ -123,10 +114,14 @@ impl Compiler {
                 self.compile_bind(name, value);
             }
             Expr::Ident(name) => {
-                self.compile_load(name);
+                self.compile_load(name).expect("compile load failed");
             }
             Expr::FunDef { name, args, body } => {
                 self.compile_fundef(name, args, body);
+            }
+            Expr::FunCall { name, args } => {
+                self.compile_fun_call(name, args)
+                    .expect("compile fun call failed");
             }
             _ => unimplemented!("Expr: {:?} not implemented", expr),
         }
@@ -165,7 +160,7 @@ impl Compiler {
 
     fn compile_bind(&mut self, name: DIndex, value: EIndex) {
         self.compile_expr(value);
-        let i = self.scope_stack.add(name);
+        let i = self.scope_stack.bind_local(name);
         self.emit(ByteCode::Store(i));
     }
 
@@ -186,8 +181,12 @@ impl Compiler {
         self.bytecode.ops.push(bc);
     }
 
+    fn current_offset(&self) -> usize {
+        self.bytecode.ops.len()
+    }
+
     fn reserve(&mut self) -> usize {
-        let i = self.bytecode.ops.len();
+        let i = self.current_offset();
         self.emit(ByteCode::Nop);
         return i;
     }
@@ -197,13 +196,13 @@ impl Compiler {
     }
 
     fn end_jmp_if_zero(&mut self, jmp_i: usize) {
-        let len = self.bytecode.ops.len();
+        let len = self.current_offset();
         let jump_offset = len as u32;
         self.set(jmp_i, ByteCode::JumpIfZero(jump_offset));
     }
 
     fn end_jmp(&mut self, jmp_i: usize) {
-        let len = self.bytecode.ops.len();
+        let len = self.current_offset();
         let jump_offset = len as u32;
         self.set(jmp_i, ByteCode::Jump(jump_offset));
     }
@@ -217,8 +216,9 @@ impl Compiler {
         &self.bytecode
     }
 
-    fn compile_fundef(&mut self, _name: usize, args: usize, body: usize) {
+    fn compile_fundef(&mut self, name: DIndex, args: EIndex, body: EIndex) {
         let start = self.init_jmp();
+        self.fun_map.add(name, self.current_offset() as u32, args);
         self.scope_stack.start_new();
         self.compile_fun_args(args);
         self.compile_expr(body);
@@ -228,28 +228,36 @@ impl Compiler {
     }
 
     fn compile_fun_args(&mut self, args_start: usize) {
-        let first_arg = self.ast.exprs[args_start];
-        let Expr::FunArg {
-            name: _,
-            len: num_args,
-        } = first_arg
-        else {
-            unimplemented!("first arg should be a funarg");
-        };
-
-        if num_args == 0 {
-            return;
-        }
-
-        let args_range = args_start..args_start + num_args as usize;
+        let args_range = self.ast.args_range(args_start);
         for arg_i in args_range {
             self.mark_visited(arg_i);
             let arg = self.ast.exprs[arg_i];
             let Expr::FunArg { name, len: _ } = arg else {
                 unreachable!("funarg should be a funarg");
             };
-            self.scope_stack.add(name);
+            self.scope_stack.bind_local(name);
         }
+    }
+
+    fn compile_fun_call(&mut self, name: DIndex, args_start: EIndex) -> Result<()> {
+        let fun_offset = self.fun_map.get_offset(name).with_context(|| {
+            let name = self.ast.data.get_ref::<str>(name);
+            format!("function not found: {}", name)
+        })?;
+
+        let args = self.ast.args_range(args_start);
+        let num_args = args.len() as u32;
+
+        for arg_i in args {
+            let Expr::FunCallArg { value, .. } = self.ast.exprs[arg_i] else {
+                unreachable!("fun call arg should be a funcallarg");
+            };
+            self.compile_expr(value);
+            self.mark_visited(arg_i);
+        }
+        self.emit(ByteCode::Push(num_args as u64));
+        self.emit(ByteCode::Call(fun_offset));
+        Ok(())
     }
 }
 
@@ -269,25 +277,72 @@ impl ScopeStack {
     }
 
     fn start_new(&mut self) {
-        self.cur = self.var_map.len();
         self.starts.push(self.cur);
+        self.cur = self.var_map.len();
     }
 
     fn end(&mut self) {
-        let start = self.starts.pop().expect("no starts");
+        let start = self.cur;
+        self.cur = self.starts.pop().expect("no starts");
         self.var_map.truncate(start);
     }
 
     /// NOTE: does not check that name is not already in scope,
     /// therefore allowing shadowing
-    fn add(&mut self, name: DIndex) -> u32 {
+    fn bind_local(&mut self, name: DIndex) -> u32 {
         let i = self.var_map.len();
         self.var_map.push(name);
-        return i as u32;
+        return (i - self.cur) as u32;
     }
 
     fn get(&self, name: DIndex) -> Option<u32> {
-        self.var_map.iter().rev().position(|&n| n == name).map(|v| v as u32)
+        let pos = self.var_map
+            .iter()
+            .rev()
+            .position(|&n| n == name);
+        let Some(pos) = pos else {
+            return None;
+        };
+        if pos < self.cur {
+            unimplemented!("globals not implemented");
+        }
+        return Some((pos - self.cur) as u32);
+    }
+}
+
+struct FunMap {
+    offsets: Vec<u32>,
+    arg_starts: Vec<usize>,
+    names: Vec<DIndex>,
+}
+
+impl FunMap {
+    fn new() -> Self {
+        Self {
+            offsets: vec![],
+            names: vec![],
+            arg_starts: vec![],
+        }
+    }
+
+    fn add(&mut self, name: DIndex, offset: u32, arg_start: usize) {
+        self.names.push(name);
+        self.offsets.push(offset);
+        self.arg_starts.push(arg_start);
+    }
+
+    fn get_offset(&self, name: DIndex) -> Option<u32> {
+        self.names
+            .iter()
+            .position(|&n| n == name)
+            .map(|i| self.offsets[i])
+    }
+
+    fn get_arg_start(&self, name: DIndex) -> Option<usize> {
+        self.names
+            .iter()
+            .position(|&n| n == name)
+            .map(|i| self.arg_starts[i])
     }
 }
 
@@ -434,6 +489,58 @@ mod tests {
                 ByteCode::Load(0),
                 ByteCode::Ret // Load arg (pushing it to top of stack)
                               // return
+            ]
+        );
+    }
+
+    #[test]
+    fn fun_call() {
+        assert_compiles_to!(
+            "(fun foo (x) x) (foo 1)",
+            [
+                ByteCode::Jump(3),
+                ByteCode::Load(0),
+                ByteCode::Ret, // Load arg (pushing it to top of stack)
+                ByteCode::Push(1),
+                ByteCode::Push(1), // number of args
+                ByteCode::Call(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn fun_call_multiple_args() {
+        assert_compiles_to!(
+            "(fun foo (x y) (+ x y)) (foo 1 2)",
+            [
+            ByteCode::Jump(5),
+            ByteCode::Load(1),
+            ByteCode::Load(0),
+            ByteCode::Add,
+            ByteCode::Ret, // Load arg (pushing it to top of stack)
+            ByteCode::Push(1),
+            ByteCode::Push(2),
+            ByteCode::Push(2), // number of args
+            ByteCode::Call(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn fun_call_rec() {
+        assert_compiles_to!(
+            "(fun foo (x) (foo (- x 1))) (foo 10)",
+            [
+            ByteCode::Jump(7),
+            ByteCode::Load(0),
+            ByteCode::Push(1),
+            ByteCode::Sub,
+            ByteCode::Push(1),
+            ByteCode::Call(1),
+            ByteCode::Ret, // Load arg (pushing it to top of stack)
+            ByteCode::Push(10),
+            ByteCode::Push(1), // number of args
+            ByteCode::Call(1)
             ]
         );
     }

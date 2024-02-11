@@ -19,6 +19,19 @@ impl Ast {
     pub fn get_const_ref<'a, T: ReadFromBytesRef<'a>>(&'a self, i: DIndex) -> &'a T {
         return self.data.get_ref::<T>(i);
     }
+
+    pub fn get_num_args(&self, first_arg: parser::EIndex) -> u8 {
+        match self.exprs[first_arg] {
+            parser::Expr::FunArg { len, .. } => len,
+            parser::Expr::FunCallArg { len, .. } => len,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn args_range(&self, first_arg: parser::EIndex) -> std::ops::Range<parser::EIndex> {
+        let len = self.get_num_args(first_arg);
+        return first_arg..first_arg + len as usize
+    }
 }
 
 type ByteMapHasher = DefaultHasher;

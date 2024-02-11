@@ -345,6 +345,14 @@ impl<'a> Parser<'a> {
         self.exprs[bind_i] = Expr::Bind { name, value };
         Ok(bind_i)
     }
+
+    fn get_num_args(&self, first_arg: EIndex) -> u8 {
+        match self.exprs[first_arg] {
+            Expr::FunArg { len, .. } => len,
+            Expr::FunCallArg { len, .. } => len,
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -456,10 +464,10 @@ fn expr_into_treenode(expr: Expr, parser: &Parser<'_>, visited: &mut [bool]) -> 
     use Expr::*;
     match expr {
         Nop | Int(_) | String(_) | Ident(_) | FunArg { name: _, len: _ } => {}
-        FunCallArg { value, len: _ } => {
+        FunCallArg { value, .. } => {
             visit!(value);
         }
-        FunCall { name: _, args } => {
+        FunCall { args, .. } => {
             if let FunCallArg {
                 value: _,
                 len: num_args,
@@ -483,11 +491,11 @@ fn expr_into_treenode(expr: Expr, parser: &Parser<'_>, visited: &mut [bool]) -> 
             visit!(branch_true);
             visit!(branch_false);
         }
-        Binop { op: _, lhs, rhs } => {
+        Binop { lhs, rhs, ..} => {
             visit!(lhs);
             visit!(rhs);
         }
-        FunDef { name: _, args, body } => {
+        FunDef { args, body, ..} => {
             let mut arg_node = TreeNode::new("Args".to_string());
             if let FunArg {
                 name: _,
@@ -521,19 +529,17 @@ fn repr_expr(expr: Expr, parser: &Parser<'_>) -> String {
     match expr {
         Expr::Nop => "Nop".to_string(),
         Expr::Int(i) => format!("Int {}", parser.data.get::<u64>(i)),
-        Expr::Binop { op, lhs: _, rhs: _ } => format!("{:?}", op),
+        Expr::Binop { op,..} => format!("{:?}", op),
         Expr::If {
-            cond: _,
-            branch_true: _,
-            branch_false: _,
+            ..
         } => "If".to_string(),
-        Expr::FunDef { name, args: _, body: _ } => format!("Fun {:?}", parser.data.get_ref::<str>(name)),
-        Expr::FunArg { name, len } => format!("Arg {:?}", parser.data.get_ref::<str>(name)),
-        Expr::FunCallArg { value: _, len: _ } => format!("Param"),
-        Expr::FunCall { name, args } => format!("Call {:?}", parser.data.get_ref::<str>(name)),
+        Expr::FunDef { name, ..} => format!("Fun {:?}", parser.data.get_ref::<str>(name)),
+        Expr::FunArg { name, .. } => format!("Arg {:?}", parser.data.get_ref::<str>(name)),
+        Expr::FunCallArg {..} => format!("Param"),
+        Expr::FunCall { name, .. } => format!("Call {:?}", parser.data.get_ref::<str>(name)),
         Expr::Ident(i) => format!("Ident {:?}", parser.data.get_ref::<str>(i)),
         Expr::String(i) => format!("Str \"{:?}\"", parser.data.get_ref::<str>(i)),
-        Expr::Bind { name, value } => format!("let {:?}", parser.data.get_ref::<str>(name)),
+        Expr::Bind { name, .. } => format!("let {:?}", parser.data.get_ref::<str>(name)),
     }
 }
 
@@ -813,4 +819,18 @@ pub mod tests {
             Expr::FunCallArg { value: 0, len: 0 }
         ])
     }
+
+    #[test]
+    fn fib_if() {
+        let contents = r#" ( if (<= n 1)
+                    (return n)
+                    (return (+
+                              (fib (- n 1))
+                              (fib (- n 2))
+                              ))
+                )
+        "#;
+        let parser = parse(contents).expect("parser error");
+    }
+
 }
