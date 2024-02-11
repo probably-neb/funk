@@ -1,21 +1,29 @@
 use std::collections::HashMap;
 
+use anyhow::{Context, Result};
+
 use crate::ast::{Ast, DIndex};
-use crate::parser::{EIndex, Expr, Binop};
+use crate::parser::{Binop, EIndex, Expr};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ByteCode {
     Nop,
     Push(u64),
+    Mov(u32),
     Jump(u32),
     JumpIfZero(u32),
     Store(u32),
     Load(u32),
+    Ret,
     Add,
     Sub,
     Mul,
     Div,
     Eq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq
 }
 
 impl From<Binop> for ByteCode {
@@ -26,6 +34,10 @@ impl From<Binop> for ByteCode {
             Binop::Mul => ByteCode::Mul,
             Binop::Div => ByteCode::Div,
             Binop::Eq => ByteCode::Eq,
+            Binop::Lt => ByteCode::Lt,
+            Binop::LtEq => ByteCode::LtEq,
+            Binop::Gt => ByteCode::Gt,
+            Binop::GtEq => ByteCode::GtEq,
         }
     }
 }
@@ -41,6 +53,15 @@ pub struct Compiler {
     expr_i: usize,
     visited: Vec<bool>,
     name_map: HashMap<DIndex, u32>,
+    scope_stack: ScopeStack,
+}
+
+macro_rules! new_sub_scope {
+    ($self:ident, $thing_to_do:expr) => {
+        $self.scope_stack.start_new();
+        $thing_to_do;
+        $self.scope_stack.end();
+    };
 }
 
 impl Compiler {
@@ -48,12 +69,11 @@ impl Compiler {
         let visited = vec![false; ast.exprs.len()];
         Self {
             ast,
-            bytecode: Chunk {
-                ops: Vec::new(),
-            },
+            bytecode: Chunk { ops: Vec::new() },
             expr_i: 0,
             visited,
             name_map: HashMap::new(),
+            scope_stack: ScopeStack::new(),
         }
     }
 
@@ -92,14 +112,21 @@ impl Compiler {
             Expr::Binop { op, lhs, rhs } => {
                 self.compile_binop(op, lhs, rhs);
             }
-            Expr::If { cond, branch_true, branch_false } => {
+            Expr::If {
+                cond,
+                branch_true,
+                branch_false,
+            } => {
                 self.compile_if(cond, branch_true, branch_false);
             }
-            Expr::Bind {name, value} => {
+            Expr::Bind { name, value } => {
                 self.compile_bind(name, value);
             }
             Expr::Ident(name) => {
                 self.compile_load(name);
+            }
+            Expr::FunDef { name, args, body } => {
+                self.compile_fundef(name, args, body);
             }
             _ => unimplemented!("Expr: {:?} not implemented", expr),
         }
@@ -125,32 +152,30 @@ impl Compiler {
         let jmp_else_i = self.init_jmp();
 
         self.end_jmp_if_zero(jmp_true_i);
+
         self.compile_expr(branch_true);
 
         let jmp_end_i = self.reserve();
 
         self.end_jmp(jmp_else_i);
-        self.compile_expr(branch_false);
 
+        self.compile_expr(branch_false);
         self.end_jmp(jmp_end_i);
     }
 
     fn compile_bind(&mut self, name: DIndex, value: EIndex) {
         self.compile_expr(value);
-        let i = self.ident_i(name);
+        let i = self.scope_stack.add(name);
         self.emit(ByteCode::Store(i));
     }
 
-    fn compile_load(&mut self, name: DIndex) {
-        // FIXME: ensure name exists
-        let i = self.ident_i(name);
+    fn compile_load(&mut self, name: DIndex) -> Result<()> {
+        let i = self.scope_stack.get(name).with_context(|| {
+            let name = self.ast.data.get_ref::<str>(name);
+            format!("variable not found: {}", name)
+        })?;
         self.emit(ByteCode::Load(i));
-    }
-
-    fn ident_i(&mut self, name: DIndex) -> u32 {
-        let next = self.name_map.len() as u32;
-        let val = self.name_map.entry(name).or_insert(next);
-        return *val;
+        Ok(())
     }
 
     fn set(&mut self, i: usize, bc: ByteCode) {
@@ -191,6 +216,79 @@ impl Compiler {
     pub fn bytecode(&self) -> &Chunk {
         &self.bytecode
     }
+
+    fn compile_fundef(&mut self, _name: usize, args: usize, body: usize) {
+        let start = self.init_jmp();
+        self.scope_stack.start_new();
+        self.compile_fun_args(args);
+        self.compile_expr(body);
+        self.emit(ByteCode::Ret);
+        self.end_jmp(start);
+        self.scope_stack.end();
+    }
+
+    fn compile_fun_args(&mut self, args_start: usize) {
+        let first_arg = self.ast.exprs[args_start];
+        let Expr::FunArg {
+            name: _,
+            len: num_args,
+        } = first_arg
+        else {
+            unimplemented!("first arg should be a funarg");
+        };
+
+        if num_args == 0 {
+            return;
+        }
+
+        let args_range = args_start..args_start + num_args as usize;
+        for arg_i in args_range {
+            self.mark_visited(arg_i);
+            let arg = self.ast.exprs[arg_i];
+            let Expr::FunArg { name, len: _ } = arg else {
+                unreachable!("funarg should be a funarg");
+            };
+            self.scope_stack.add(name);
+        }
+    }
+}
+
+struct ScopeStack {
+    var_map: Vec<DIndex>,
+    starts: Vec<usize>,
+    cur: usize,
+}
+
+impl ScopeStack {
+    fn new() -> Self {
+        Self {
+            var_map: vec![],
+            starts: vec![0],
+            cur: 0,
+        }
+    }
+
+    fn start_new(&mut self) {
+        self.cur = self.var_map.len();
+        self.starts.push(self.cur);
+    }
+
+    fn end(&mut self) {
+        let start = self.starts.pop().expect("no starts");
+        self.var_map.truncate(start);
+    }
+
+    /// NOTE: does not check that name is not already in scope,
+    /// therefore allowing shadowing
+    fn add(&mut self, name: DIndex) -> u32 {
+        let i = self.var_map.len();
+        self.var_map.push(name);
+        return i as u32;
+    }
+
+    fn get(&self, name: DIndex) -> Option<u32> {
+        self.var_map.iter().rev().position(|&n| n == name).map(|v| v as u32)
+    }
 }
 
 #[cfg(test)]
@@ -200,7 +298,7 @@ mod tests {
 
     fn compile(contents: &str) -> Compiler {
         let parser = crate::parser::Parser::new(contents);
-        let mut compiler = Compiler::new(parser.parse().unwrap());
+        let mut compiler = Compiler::new(parser.parse().expect("syntax error"));
         compiler.compile();
         return compiler;
     }
@@ -220,7 +318,7 @@ mod tests {
     }
 
     macro_rules! assert_compiles_to {
-        ($contents:literal, [$($ops:pat),*]) => {
+        ($contents:expr, [$($ops:pat),*]) => {
             let contents = $contents;
             let compiler = compile(contents);
             assert_bytecode_matches!(compiler.bytecode, [$($ops),*]);
@@ -313,23 +411,29 @@ mod tests {
 
     #[test]
     fn let_bind() {
-        assert_compiles_to!(
-            "(let x 1)",
-            [
-                ByteCode::Push(1),
-                ByteCode::Store(0)
-            ]
-        );
+        assert_compiles_to!("(let x 1)", [ByteCode::Push(1), ByteCode::Store(0)]);
     }
 
     #[test]
     fn let_bind_and_use() {
         assert_compiles_to!(
             "(let x 1) x",
+            [ByteCode::Push(1), ByteCode::Store(0), ByteCode::Load(0)]
+        );
+    }
+
+    #[test]
+    fn fun_def() {
+        assert_compiles_to!(
+            "(fun foo (x) x)",
             [
-                ByteCode::Push(1),
-                ByteCode::Store(0),
-                ByteCode::Load(0)
+                // TODO: implement placing functions somewhere
+                // and storing offsets to them instead of just
+                // skipping them when they are encountered
+                ByteCode::Jump(3),
+                ByteCode::Load(0),
+                ByteCode::Ret // Load arg (pushing it to top of stack)
+                              // return
             ]
         );
     }

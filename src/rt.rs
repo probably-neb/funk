@@ -44,17 +44,15 @@ impl<'chunk> Runtime<'chunk> {
                 ByteCode::Push(i) => {
                     self.stack.push(i.try_into()?);
                 }
-                ByteCode::Add
-                | ByteCode::Sub
-                | ByteCode::Mul
-                | ByteCode::Div
-                | ByteCode::Eq => {
+                ByteCode::Add | ByteCode::Sub | ByteCode::Mul | ByteCode::Div | ByteCode::Eq |ByteCode::Lt | ByteCode::LtEq | ByteCode::Gt | ByteCode::GtEq => {
                     self.exec_binop(bc)?;
                 }
+                ByteCode::Mov(ofs) => self.exec_mov(ofs)?,
                 ByteCode::JumpIfZero(addr) => self.exec_jmpiz(addr)?,
                 ByteCode::Jump(addr) => self.exec_jmp(addr)?,
                 ByteCode::Store(idx) => self.exec_store(idx)?,
                 ByteCode::Load(idx) => self.exec_load(idx)?,
+                ByteCode::Ret => unimplemented!(),
                 ByteCode::Nop => unreachable!("nop should be removed by compiler"),
             }
         }
@@ -110,6 +108,20 @@ impl<'chunk> Runtime<'chunk> {
         self.stack.push(val);
         Ok(())
     }
+
+    fn exec_mov(&mut self, ofs: u32) -> Result<()> {
+        let ofs = ofs as usize;
+        let idx = self.stack.len() - ofs;
+        self.stack[idx..].rotate_left(1);
+        Ok(())
+    }
+}
+
+fn is_binop(bc: ByteCode) -> bool {
+    matches!(
+        bc,
+        ByteCode::Add | ByteCode::Sub | ByteCode::Mul | ByteCode::Div | ByteCode::Eq | ByteCode::Lt | ByteCode::LtEq | ByteCode::Gt | ByteCode::GtEq
+    )
 }
 
 #[cfg(test)]
@@ -152,5 +164,51 @@ mod test {
         assert_eq!(stack, vec![3]);
     }
 
+    #[test]
+    fn fib_if() {
+        let contents = r#" ( if (<= n 1)
+                    (return n)
+                    (return (+
+                              (fib (- n 1))
+                              (fib (- n 2))
+                              ))
+                )
+        "#;
+        let stack = run_src(contents);
+    }
 
+    #[test]
+    fn fib() {
+        let contents = r#"
+            (fun fib (n) (
+                if (<= n 1)
+                    (return n)
+                    (return (+
+                              (fib (- n 1))
+                              (fib (- n 2))
+                              ))
+                )
+           )
+
+            (fib 10)
+        "#;
+        let stack = run_src(contents);
+        // fib(10)
+        assert_eq!(stack, vec![55]);
+    }
+
+    #[test]
+    fn mov() {
+        let chunk = Chunk {
+            ops: vec![ByteCode::Mov(2)],
+        };
+        let mut rt = Runtime {
+            chunk: &chunk,
+            stack: vec![1, 2, 3],
+            pc: 0,
+            vars: vec![],
+        };
+        let stack = rt.run().unwrap();
+        assert_eq!(stack, vec![1, 3, 2]);
+    }
 }
