@@ -1,4 +1,5 @@
 use anyhow::Result;
+use phf::phf_map;
 
 pub type Range = (usize, usize);
 
@@ -30,7 +31,7 @@ pub enum Token {
     Eof,
     If,
     Fun,
-    Let
+    Let,
 }
 
 pub struct Lexer<'a> {
@@ -39,6 +40,14 @@ pub struct Lexer<'a> {
     ch: u8,
     input: &'a [u8],
 }
+
+static KEYWORDS: phf::Map<&'static [u8], Token> = phf_map! {
+    b"true" => Token::True,
+    b"false" => Token::False,
+    b"if" => Token::If,
+    b"fun" => Token::Fun,
+    b"let" => Token::Let,
+};
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
@@ -105,14 +114,11 @@ impl<'a> Lexer<'a> {
 
     fn ident_or_builtin(&mut self) -> Token {
         let range = self.read_ident();
-        return match self.slice(&range) {
-            b"true" => Token::True,
-            b"false" => Token::False,
-            b"if" => Token::If,
-            b"fun" => Token::Fun,
-            b"let" => Token::Let,
-            _ => Token::Ident(range),
-        };
+        let slice = self.slice(&range);
+        if let Some(tok) = KEYWORDS.get(slice) {
+            return *tok;
+        }
+        return Token::Ident(range);
     }
 
     fn read_ident(&mut self) -> Range {
@@ -194,7 +200,7 @@ impl<'a> Lexer<'a> {
             b'+' => Token::Plus,
             b'*' => Token::Mul,
             b'/' => Token::Div,
-            _ => unreachable!("unrecognized punct {}", self.ch as char)
+            _ => unreachable!("unrecognized punct {}", self.ch as char),
         }
     }
 
