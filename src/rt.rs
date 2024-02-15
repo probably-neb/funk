@@ -15,6 +15,7 @@ struct Runtime<'chunk> {
     pc: usize,
     vars: Vec<i64>,
     call_stack: Vec<CallFrame>,
+    current_frame_offset: usize,
 }
 
 impl<'chunk> Runtime<'chunk> {
@@ -24,7 +25,8 @@ impl<'chunk> Runtime<'chunk> {
             stack: Vec::new(),
             pc: 0,
             vars: Vec::new(),
-            call_stack: vec![]
+            call_stack: vec![],
+            current_frame_offset: 0,
         }
     }
 
@@ -46,7 +48,15 @@ impl<'chunk> Runtime<'chunk> {
                 ByteCode::Push(i) => {
                     self.stack.push(i.try_into()?);
                 }
-                ByteCode::Add | ByteCode::Sub | ByteCode::Mul | ByteCode::Div | ByteCode::Eq |ByteCode::Lt | ByteCode::LtEq | ByteCode::Gt | ByteCode::GtEq => {
+                ByteCode::Add
+                | ByteCode::Sub
+                | ByteCode::Mul
+                | ByteCode::Div
+                | ByteCode::Eq
+                | ByteCode::Lt
+                | ByteCode::LtEq
+                | ByteCode::Gt
+                | ByteCode::GtEq => {
                     self.exec_binop(bc)?;
                 }
                 ByteCode::Mov(ofs) => self.exec_mov(ofs)?,
@@ -100,13 +110,9 @@ impl<'chunk> Runtime<'chunk> {
         }
     }
 
-    fn current_frame_offset(&self) -> usize {
-        self.call_stack.last().map(|f| f.heap_offset).unwrap_or(0)
-    }
-
     fn exec_store_local(&mut self, idx: u32) -> Result<()> {
         let val = self.stack.pop().context("stack underflow")?;
-        let offset = self.current_frame_offset();
+        let offset = self.current_frame_offset;
         let idx = idx as usize + offset;
         self.ensure_var_cap(idx);
         self.vars[idx] = val;
@@ -114,7 +120,7 @@ impl<'chunk> Runtime<'chunk> {
     }
 
     fn exec_load_local(&mut self, idx: u32) -> Result<()> {
-        let offset = self.current_frame_offset();
+        let offset = self.current_frame_offset;
         let idx = idx as usize + offset;
         let val = self.vars[idx];
         self.stack.push(val);
@@ -141,6 +147,7 @@ impl<'chunk> Runtime<'chunk> {
             pc,
             heap_offset: fp,
         });
+        self.current_frame_offset = fp;
         self.pc = addr;
         Ok(())
     }
@@ -149,6 +156,12 @@ impl<'chunk> Runtime<'chunk> {
         let frame = self.call_stack.pop().context("call stack underflow")?;
         self.pc = frame.pc;
         self.vars.truncate(frame.heap_offset);
+
+        if let Some(frame) = self.call_stack.last() {
+            self.current_frame_offset = frame.heap_offset;
+        } else {
+            self.current_frame_offset = 0;
+        }
         Ok(())
     }
 }
@@ -235,7 +248,7 @@ mod test {
             ops: vec![ByteCode::Mov(2)],
         };
         let mut rt = Runtime::new(&chunk);
-        rt.stack= vec![1, 2, 3];
+        rt.stack = vec![1, 2, 3];
         let stack = rt.run().unwrap();
         assert_eq!(stack, vec![1, 3, 2]);
     }
