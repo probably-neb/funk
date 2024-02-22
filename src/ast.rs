@@ -3,16 +3,18 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use crate::parser;
+// TODO: move XIndex def here
+use crate::parser::{self, XIndex};
 
 pub struct Ast {
     pub exprs: Vec<parser::Expr>,
     pub data: DataPool,
+    pub extra: Extra
 }
 
 impl Ast {
-    pub fn new(exprs: Vec<parser::Expr>, data: DataPool) -> Self {
-        Self { exprs, data }
+    pub fn new(exprs: Vec<parser::Expr>, data: DataPool, extra: Extra) -> Self {
+        Self { exprs, data, extra}
     }
 
     pub fn get_const<T: ReadFromBytes>(&self, i: DIndex) -> T {
@@ -24,18 +26,25 @@ impl Ast {
         return self.data.get_ref::<T>(i);
     }
 
-    pub fn get_num_args(&self, first_arg: parser::EIndex) -> u8 {
-        match self.exprs[first_arg] {
-            parser::Expr::FunArg { len, .. } => len,
-            parser::Expr::FunCallArg { len, .. } => len,
-            _ => unreachable!(),
-        }
+    pub fn get_num_args(&self, first_arg: parser::EIndex) -> u32 {
+        return self.extra[first_arg];
     }
 
-    pub fn args_range(&self, first_arg: parser::EIndex) -> std::ops::Range<parser::EIndex> {
-        let len = self.get_num_args(first_arg);
-        return first_arg..first_arg + len as usize;
+    pub fn args_range(&self, args_i: parser::EIndex) -> std::ops::Range<parser::EIndex> {
+        let len = self.get_num_args(args_i);
+        let start = args_i + 1;
+        let end = start + len as usize;
+        return start..end;
     }
+
+    pub fn fun_args_slice<'s>(&'s self, i: XIndex) -> &'s [u32] {
+        return self.extra.get::<ExtraFunArgs>(i).args;
+    }
+
+    pub fn fun_arg_names_iter<'s>(&'s self, i: XIndex) -> impl Iterator<Item = &'s str> {
+        return self.fun_args_slice(i).iter().map(|a| self.data.get_ref::<str>(*a as usize));
+    }
+
 }
 
 // Wraps a HashMap<u64, DIndex> to use byte slices as keys
@@ -247,17 +256,16 @@ pub trait FromExtra<'e> {
 }
 
 pub struct ExtraFunArgs<'e> {
-    pub len: &'e ExtraData,
     pub args: &'e [ExtraData]
 }
 
 impl<'e> FromExtra<'e> for ExtraFunArgs<'e> {
     fn from_extra(extra: &'e Extra, i: usize) -> Self {
-        let len = &extra.data[0];
+        let len = extra.data[0];
         let start = i + 1;
-        let end = start + *len as usize;
+        let end = start + len as usize;
         let args = &extra.data[start..end];
-        return Self { len, args };
+        return Self { args };
     }
 }
 

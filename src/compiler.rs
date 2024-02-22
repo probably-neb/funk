@@ -148,20 +148,23 @@ impl Compiler {
 
         self.end_jmp_if_zero(jmp_true_i);
 
+        self.scope_stack.start_subscope();
         self.compile_expr(branch_true);
+        self.scope_stack.end_subscope();
 
         let jmp_end_i = self.reserve();
 
         self.end_jmp(jmp_else_i);
 
+        self.scope_stack.start_subscope();
         self.compile_expr(branch_false);
+        self.scope_stack.end_subscope();
         self.end_jmp(jmp_end_i);
     }
 
     fn compile_bind(&mut self, name: DIndex, value: EIndex) {
         self.compile_expr(value);
-        let i = self.scope_stack.bind_local(name);
-        self.emit(ByteCode::Store(i));
+        self.scope_stack.bind_local(name);
     }
 
     fn compile_load(&mut self, name: DIndex) -> Result<()> {
@@ -220,22 +223,17 @@ impl Compiler {
         let start = self.init_jmp();
         self.fun_map.add(name, self.current_offset() as u32, args);
         self.scope_stack.start_new();
-        self.compile_fun_args(args);
+        self.bind_fun_args(args);
+        self.scope_stack.skip::<2>();
         self.compile_expr(body);
         self.emit(ByteCode::Ret);
         self.end_jmp(start);
         self.scope_stack.end();
     }
 
-    fn compile_fun_args(&mut self, args_start: usize) {
-        let args_range = self.ast.args_range(args_start);
-        for arg_i in args_range {
-            self.mark_visited(arg_i);
-            let arg = self.ast.exprs[arg_i];
-            let Expr::FunArg { name, len: _ } = arg else {
-                unreachable!("funarg should be a funarg");
-            };
-            self.scope_stack.bind_local(name);
+    fn bind_fun_args(&mut self, args_start: usize) {
+        for &arg_name in self.ast.fun_args_slice(args_start) {
+            self.scope_stack.bind_local(arg_name as DIndex);
         }
     }
 
@@ -245,61 +243,74 @@ impl Compiler {
             format!("function not found: {}", name)
         })?;
 
-        let args = self.ast.args_range(args_start);
-        let num_args = args.len() as u32;
+        let args_range = self.ast.args_range(args_start);
+        let num_args = args_range.len();
 
-        for arg_i in args {
-            let Expr::FunCallArg { value, .. } = self.ast.exprs[arg_i] else {
-                unreachable!("fun call arg should be a funcallarg");
-            };
-            self.compile_expr(value);
-            self.mark_visited(arg_i);
+        for arg_i in args_range {
+            let arg = self.ast.extra[arg_i];
+            self.compile_expr(arg as EIndex);
         }
-        self.emit(ByteCode::Push(num_args as u64));
+        self.emit(ByteCode::Push(self.ast.get_num_args(args_start) as u64));
         self.emit(ByteCode::Call(fun_offset));
+        self.scope_stack.skip::<1>();
         Ok(())
     }
 }
 
 struct ScopeStack {
-    var_map: Vec<DIndex>,
+    stack_map: Vec<DIndex>,
     starts: Vec<usize>,
     cur: usize,
 }
 
 impl ScopeStack {
+    const NOT_BOUND: DIndex = usize::MAX;
+
     fn new() -> Self {
         Self {
-            var_map: vec![],
+            stack_map: vec![],
             starts: vec![0],
             cur: 0,
         }
     }
 
+    fn skip<const N: usize>(&mut self) {
+        let vals = [Self::NOT_BOUND; N];
+        self.stack_map.extend(vals);
+    }
+
+    /// like start_new but does not set `cur`
+    fn start_subscope(&mut self) {
+        self.starts.push(self.stack_map.len());
+    }
+
+    fn end_subscope(&mut self) {
+        let start = self.starts.pop().expect("no starts");
+        self.stack_map.truncate(start);
+    }
+
     fn start_new(&mut self) {
         self.starts.push(self.cur);
-        self.cur = self.var_map.len();
+        self.cur = self.stack_map.len();
     }
 
     fn end(&mut self) {
         let start = self.cur;
         self.cur = self.starts.pop().expect("no starts");
-        self.var_map.truncate(start);
+        self.stack_map.truncate(start);
     }
 
     /// NOTE: does not check that name is not already in scope,
     /// therefore allowing shadowing
     fn bind_local(&mut self, name: DIndex) -> u32 {
-        let i = self.var_map.len();
-        self.var_map.push(name);
+        let i = self.stack_map.len();
+        self.stack_map.push(name);
         return (i - self.cur) as u32;
     }
 
     fn get(&self, name: DIndex) -> Option<u32> {
-        let pos = self.var_map
-            .iter()
-            .rev()
-            .position(|&n| n == name);
+        debug_assert_ne!(name, Self::NOT_BOUND);
+        let pos = self.stack_map.iter().rev().position(|&n| n == name);
         let Some(pos) = pos else {
             return None;
         };
@@ -307,6 +318,12 @@ impl ScopeStack {
             unimplemented!("globals not implemented");
         }
         return Some((pos - self.cur) as u32);
+    }
+
+    fn is_last(&self, i: u32) -> bool {
+        let i = self.cur + i as usize;
+        let len = self.stack_map.len();
+        return i + 1 == len;
     }
 }
 
@@ -338,6 +355,7 @@ impl FunMap {
             .map(|i| self.offsets[i])
     }
 
+    #[allow(unused)]
     fn get_arg_start(&self, name: DIndex) -> Option<usize> {
         self.names
             .iter()
@@ -349,7 +367,22 @@ impl FunMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::ByteCode::*;
     use crate::parser::tests::assert_matches;
+
+    mod scope_stack {
+        use super::*;
+
+        #[test]
+        fn is_last() {
+            let mut s = ScopeStack::new();
+            let name = 13;
+            let i = s.bind_local(name);
+            let found = s.get(name).expect("found");
+            assert_eq!(found, i);
+            assert!(s.is_last(found));
+        }
+    }
 
     fn compile(contents: &str) -> Compiler {
         let parser = crate::parser::Parser::new(contents);
@@ -394,16 +427,7 @@ mod tests {
     fn nested_add() {
         let contents = "( + 1 ( + 2 3 ) )";
         let compiler = compile(contents);
-        assert_bytecode_matches!(
-            compiler.bytecode,
-            [
-                ByteCode::Push(1),
-                ByteCode::Push(2),
-                ByteCode::Push(3),
-                ByteCode::Add,
-                ByteCode::Add
-            ]
-        );
+        assert_bytecode_matches!(compiler.bytecode, [Push(1), Push(2), Push(3), Add, Add]);
     }
 
     #[test]
@@ -412,14 +436,7 @@ mod tests {
         let compiler = compile(contents);
         assert_bytecode_matches!(
             compiler.bytecode,
-            [
-                ByteCode::Push(1),
-                ByteCode::Push(2),
-                ByteCode::Add,
-                ByteCode::Push(3),
-                ByteCode::Push(4),
-                ByteCode::Add
-            ]
+            [Push(1), Push(2), Add, Push(3), Push(4), Add]
         );
     }
 
@@ -430,18 +447,18 @@ mod tests {
         assert_bytecode_matches!(
             compiler.bytecode,
             [
-                ByteCode::Push(1),
-                ByteCode::Push(2),
-                ByteCode::Add,
-                ByteCode::Push(3),
-                ByteCode::Push(4),
-                ByteCode::Sub,
-                ByteCode::Push(5),
-                ByteCode::Push(6),
-                ByteCode::Mul,
-                ByteCode::Push(7),
-                ByteCode::Push(8),
-                ByteCode::Div
+                Push(1),
+                Push(2),
+                Add,
+                Push(3),
+                Push(4),
+                Sub,
+                Push(5),
+                Push(6),
+                Mul,
+                Push(7),
+                Push(8),
+                Div
             ]
         );
     }
@@ -453,28 +470,18 @@ mod tests {
         dbg!(&compiler.bytecode.ops);
         assert_bytecode_matches!(
             compiler.bytecode,
-            [
-                ByteCode::Push(1),
-                ByteCode::JumpIfZero(3),
-                ByteCode::Jump(5),
-                ByteCode::Push(2),
-                ByteCode::Jump(6),
-                ByteCode::Push(3)
-            ]
+            [Push(1), JumpIfZero(3), Jump(5), Push(2), Jump(6), Push(3)]
         );
     }
 
     #[test]
     fn let_bind() {
-        assert_compiles_to!("(let x 1)", [ByteCode::Push(1), ByteCode::Store(0)]);
+        assert_compiles_to!("(let x 1)", [ByteCode::Push(1)]);
     }
 
     #[test]
     fn let_bind_and_use() {
-        assert_compiles_to!(
-            "(let x 1) x",
-            [ByteCode::Push(1), ByteCode::Store(0), ByteCode::Load(0)]
-        );
+        assert_compiles_to!("(let x 1) (+ x 1)", [Push(1), Load(0), Push(1), Add]);
     }
 
     #[test]
@@ -485,10 +492,10 @@ mod tests {
                 // TODO: implement placing functions somewhere
                 // and storing offsets to them instead of just
                 // skipping them when they are encountered
-                ByteCode::Jump(3),
-                ByteCode::Load(0),
-                ByteCode::Ret // Load arg (pushing it to top of stack)
-                              // return
+                Jump(3),
+                Load(2),
+                Ret // Load arg (pushing it to top of stack)
+                    // return
             ]
         );
     }
@@ -498,12 +505,12 @@ mod tests {
         assert_compiles_to!(
             "(fun foo (x) x) (foo 1)",
             [
-                ByteCode::Jump(3),
-                ByteCode::Load(0),
-                ByteCode::Ret, // Load arg (pushing it to top of stack)
-                ByteCode::Push(1),
-                ByteCode::Push(1), // number of args
-                ByteCode::Call(1)
+                Jump(3),
+                Load(2),
+                Ret, // Load arg (pushing it to top of stack)
+                Push(1),
+                Push(1), // number of args
+                Call(1)
             ]
         );
     }
@@ -513,15 +520,15 @@ mod tests {
         assert_compiles_to!(
             "(fun foo (x y) (+ x y)) (foo 1 2)",
             [
-            ByteCode::Jump(5),
-            ByteCode::Load(1),
-            ByteCode::Load(0),
-            ByteCode::Add,
-            ByteCode::Ret, // Load arg (pushing it to top of stack)
-            ByteCode::Push(1),
-            ByteCode::Push(2),
-            ByteCode::Push(2), // number of args
-            ByteCode::Call(1)
+                Jump(5),
+                Load(3),
+                Load(2),
+                Add,
+                Ret, // Load arg (pushing it to top of stack)
+                Push(1),
+                Push(2),
+                Push(2), // number of args
+                Call(1)
             ]
         );
     }
@@ -531,16 +538,49 @@ mod tests {
         assert_compiles_to!(
             "(fun foo (x) (foo (- x 1))) (foo 10)",
             [
-            ByteCode::Jump(7),
-            ByteCode::Load(0),
-            ByteCode::Push(1),
-            ByteCode::Sub,
-            ByteCode::Push(1),
-            ByteCode::Call(1),
-            ByteCode::Ret, // Load arg (pushing it to top of stack)
-            ByteCode::Push(10),
-            ByteCode::Push(1), // number of args
-            ByteCode::Call(1)
+                Jump(7),
+                Load(2),
+                Push(1),
+                Sub,
+                Push(1),
+                Call(1),
+                Ret, // Load arg (pushing it to top of stack)
+                Push(10),
+                Push(1), // number of args
+                Call(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn countdown() {
+        assert_compiles_to!(
+            r#"
+                (fun countdown (n) (
+                    if (> n 0)
+                        (countdown (- n 1))
+                        n
+                ))
+                (countdown 10)
+            "#,
+            [
+                Jump(14),
+                Load(2),
+                Push(0),
+                Gt,
+                JumpIfZero(6),
+                Jump(12),
+                Load(2),
+                Push(1),
+                Sub,
+                Push(1),
+                Call(1),
+                Jump(13),
+                Load(2),
+                Ret,
+                Push(10),
+                Push(1),
+                Call(1)
             ]
         );
     }

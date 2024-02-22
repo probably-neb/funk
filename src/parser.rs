@@ -5,11 +5,14 @@ use crate::{
     lexer::{self, Lexer, Token},
 };
 
-/// Expression index
+/// Expression index into `exprs`
 pub type EIndex = usize;
 
-/// Token index
+/// Token index into `tokens`
 pub type TIndex = usize;
+
+/// index into `extra`
+pub type XIndex = usize;
 
 pub struct Parser<'a> {
     lxr: Lexer<'a>,
@@ -39,20 +42,12 @@ pub enum Expr {
     },
     FunDef {
         name: DIndex,
-        args: EIndex,
+        args: XIndex,
         body: EIndex,
-    },
-    FunArg {
-        name: DIndex,
-        len: u8,
-    },
-    FunCallArg {
-        value: EIndex,
-        len: u8,
     },
     FunCall {
         name: DIndex,
-        args: EIndex,
+        args: XIndex,
     },
     Bind {
         name: DIndex,
@@ -105,7 +100,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse(mut self) -> Result<crate::ast::Ast> {
         self._parse()?;
-        Ok(Ast::new(self.exprs, self.data))
+        Ok(Ast::new(self.exprs, self.data, self.extra))
     }
 
     fn _parse(&mut self) -> Result<()> {
@@ -243,31 +238,26 @@ impl<'a> Parser<'a> {
         let Some(tok) = self.peek_tok() else {
             return Err(anyhow!("expected args got EOF"));
         };
+
+        let extra_args = self.extra.reserve();
+
         if let Token::RParen = tok {
-            let extra_args = self.extra.append(0);
-            let empty_arg = self.push(Expr::FunCallArg { value: 0, len: 0 });
-            return Ok(empty_arg);
+            // no args
+            self.extra[extra_args] = 0;
+            return Ok(extra_args);
         }
 
-        let mut args = vec![];
-
-        let extra_args_len = self.extra.reserve();
+        let mut num = 0;
 
         while !matches!(self.peek_tok(), Some(Token::RParen)) {
             let arg = self.expr().context("expected arg")??;
             self.extra.append(arg as u32);
-            args.push(arg);
+            num += 1;
         }
 
-        let len = args.len() as u8;
-        self.extra[extra_args_len] = len as u32;
-        let first = self.push(Expr::FunCallArg{ value: args[0], len});
+        self.extra[extra_args] = num;
 
-        for arg in args.into_iter().skip(1) {
-            self.push(Expr::FunCallArg { value: arg, len });
-        }
-
-        Ok(first)
+        Ok(extra_args)
     }
 
     fn binop_expr(&mut self, op: Binop) -> Result<EIndex> {
@@ -309,7 +299,7 @@ impl<'a> Parser<'a> {
         Ok(fun_i)
     }
 
-    fn fun_args(&mut self) -> Result<EIndex> {
+    fn fun_args(&mut self) -> Result<XIndex> {
         eat!(self, Token::LParen)?;
         let Some(tok) = self.tok() else {
             return Err(anyhow!("expected args got EOF"));
@@ -318,32 +308,27 @@ impl<'a> Parser<'a> {
         let extra_args_len = self.extra.reserve();
 
         if let Token::RParen = tok {
-            let emtpy_arg = self.push(Expr::FunArg { name: 0, len: 0 });
-            return Ok(emtpy_arg);
+            // no args
+            self.extra[extra_args_len] = 0;
+            return Ok(extra_args_len);
         }
         let Token::Ident(first_range) = tok else {
             return Err(anyhow!("incomplete args"));
         };
         let first_name = self.intern_str(first_range);
         self.extra.append(first_name as u32);
-        let first = self.reserve();
 
-        let mut num = 1_u8;
+        let mut num = 1;
 
         while let Some(Token::Ident(range)) = self.tok() {
             num += 1;
             let name = self.intern_str(range);
             self.extra.append(name as u32);
-            self.push(Expr::FunArg { name, len: num });
         }
 
-        self.extra[extra_args_len] = num as u32;
-        self.exprs[first] = Expr::FunArg {
-            name: first_name,
-            len: num,
-        };
-        assert_eq!(self.tokens[self.tok_i], Token::RParen);
-        Ok(first)
+        self.extra[extra_args_len] = num;
+        debug_assert_eq!(self.tokens[self.tok_i], Token::RParen);
+        Ok(extra_args_len)
     }
 
 
@@ -360,12 +345,20 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(unused)]
-    fn get_num_args(&self, first_arg: EIndex) -> u8 {
-        match self.exprs[first_arg] {
-            Expr::FunArg { len, .. } => len,
-            Expr::FunCallArg { len, .. } => len,
-            _ => unreachable!(),
-        }
+    fn get_num_args(&self, first_arg: XIndex) -> u32 {
+        return self.extra[first_arg];
+    }
+
+    fn fun_args_slice<'s>(&'s self, i: XIndex) -> &'s [u32] {
+        return self.extra.get::<ast::ExtraFunArgs>(i).args;
+    }
+
+    fn fun_arg_names_iter<'s>(&'s self, i: XIndex) -> impl Iterator<Item = &'s str> {
+        return self.fun_args_slice(i).iter().map(|a| self.data.get_ref::<str>(*a as usize));
+    }
+
+    fn get_ident<'s>(&'s self, i: usize) -> &'s str {
+        return self.data.get_ref::<str>(i);
     }
 }
 
@@ -477,24 +470,10 @@ fn expr_into_treenode(expr: Expr, parser: &Parser<'_>, visited: &mut [bool]) -> 
     }
     use Expr::*;
     match expr {
-        Nop | Int(_) | String(_) | Ident(_) | FunArg { name: _, len: _ } => {}
-        FunCallArg { value, .. } => {
-            visit!(value);
-        }
+        Nop | Int(_) | String(_) | Ident(_) => {}
         FunCall { args, .. } => {
-            if let FunCallArg {
-                value: _,
-                len: num_args,
-            } = parser.exprs[args]
-            {
-                for i in 0..num_args {
-                    let arg_i = args + i as usize;
-                    visit!(arg_i);
-                    visited[arg_i] = true;
-                }
-            } else {
-                node.add_node(TreeNode::new(format!("error: {:?}", parser.exprs[args])));
-            };
+            let names: Vec<&str> = parser.fun_arg_names_iter(args).collect();
+            node.add_node(TreeNode::new(format!("args: [{}]", names.join(", "))));
         }
         If {
             cond,
@@ -511,20 +490,11 @@ fn expr_into_treenode(expr: Expr, parser: &Parser<'_>, visited: &mut [bool]) -> 
         }
         FunDef { args, body, ..} => {
             let mut arg_node = TreeNode::new("Args".to_string());
-            if let FunArg {
-                name: _,
-                len: num_args,
-            } = parser.exprs[args]
-            {
-                for i in 0..num_args {
-                    let arg_i = args + i as usize;
-                    let arg = expr_into_treenode(parser.exprs[arg_i], parser, visited);
-                    arg_node.add_node(arg);
-                    visited[arg_i] = true;
-                }
-            } else {
-                arg_node.add_node(TreeNode::new("Error".to_string()));
-            };
+            for arg_i in parser.fun_args_slice(args) {
+                let arg = expr_into_treenode(expr, parser, visited);
+                arg_node.add_node(arg);
+                visited[*arg_i as usize] = true;
+            }
             node.add_node(arg_node);
 
             visit!(body);
@@ -547,13 +517,11 @@ fn repr_expr(expr: Expr, parser: &Parser<'_>) -> String {
         Expr::If {
             ..
         } => "If".to_string(),
-        Expr::FunDef { name, ..} => format!("Fun {:?}", parser.data.get_ref::<str>(name)),
-        Expr::FunArg { name, .. } => format!("Arg {:?}", parser.data.get_ref::<str>(name)),
-        Expr::FunCallArg {..} => format!("Param"),
-        Expr::FunCall { name, .. } => format!("Call {:?}", parser.data.get_ref::<str>(name)),
-        Expr::Ident(i) => format!("Ident {:?}", parser.data.get_ref::<str>(i)),
-        Expr::String(i) => format!("Str \"{:?}\"", parser.data.get_ref::<str>(i)),
-        Expr::Bind { name, .. } => format!("let {:?}", parser.data.get_ref::<str>(name)),
+        Expr::FunDef { name, ..} => format!("Fun {:?}", parser.get_ident(name)),
+        Expr::FunCall { name, .. } => format!("Call {:?}", parser.get_ident(name)),
+        Expr::Ident(i) => format!("Ident {:?}", parser.get_ident(i)),
+        Expr::String(i) => format!("Str \"{:?}\"", parser.get_ident(i)),
+        Expr::Bind { name, .. } => format!("let {:?}", parser.get_ident(name)),
     }
 }
 
@@ -720,16 +688,6 @@ pub mod tests {
     }
 
     #[test]
-    fn fun_args() {
-        let contents = "(a b)";
-        let mut parser = Parser::new(contents);
-        let args = parser.fun_args().expect("parser error");
-        assert_eq!(args, 0);
-        assert_matches!(parser.exprs[0], Expr::FunArg { name, len: 2 });
-        assert_matches!(parser.exprs[1], Expr::FunArg { name, len: 2 });
-    }
-
-    #[test]
     fn fun_expr() {
         let contents = "(fun foo (a b) (+ a b))";
         let parser = parse(contents).expect("parser error");
@@ -756,13 +714,13 @@ pub mod tests {
     }
 
     #[test]
-    fn fun_extra_data() {
+    fn fun_args() {
         let contents = "(fun foo (a b c d) (a))";
         let parser = parse(contents).expect("parser error");
 
-        let ast::ExtraFunArgs {len, args} = parser.extra.get::<ast::ExtraFunArgs>(0);
+        let ast::ExtraFunArgs {args} = parser.extra.get::<ast::ExtraFunArgs>(0);
 
-        assert_eq!(*len, 4);
+        assert_eq!(args.len(), 4);
 
         let arg_strs: Vec<&str> = args.iter().map(|a| parser.data.get_ref::<str>(*a as usize)).collect();
         let expected_arg_strs = vec!["a", "b", "c", "d"];
@@ -771,16 +729,16 @@ pub mod tests {
     }
 
     #[test]
-    fn fun_call_extra_data() {
+    fn fun_call_args() {
         let contents = "(foo 0 1 2 3)";
         let parser = parse(contents).expect("parser error");
 
-        let ast::ExtraFunArgs {len, args} = parser.extra.get::<ast::ExtraFunArgs>(0);
+        let ast::ExtraFunArgs {args} = parser.extra.get::<ast::ExtraFunArgs>(0);
 
-        assert_eq!(*len, 4);
+        assert_eq!(args.len(), 4);
 
         dbg!(args);
-        for i in 0..*len {
+        for i in 0..args.len() {
             let arg = args[i as usize];
             let_assert_matches!(parser.exprs[arg as usize], Expr::Int(di));
             dbg!(di);
@@ -794,7 +752,14 @@ pub mod tests {
         let contents = "(fun foo (a) (+ a 1))";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
-        let_assert_matches!(parser.exprs[args], Expr::FunArg { name: a, len: 1 });
+
+        {
+            let ast::ExtraFunArgs {args} = parser.extra.get::<ast::ExtraFunArgs>(args);
+            assert_eq!(args.len(), 1);
+        }
+
+        let arg = parser.fun_args_slice(args)[0];
+        assert_eq!(parser.get_ident(arg as usize), "a");
     }
 
     #[test]
@@ -810,15 +775,9 @@ pub mod tests {
         let contents = "(fun foo (foo bar) (+ foo bar))";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
-        let_assert_matches!(parser.exprs[args], Expr::FunArg { name: foo, len: 2 });
-        let_assert_matches!(parser.exprs[args + 1], Expr::FunArg { name: bar, len: 2 });
-        assert_ne!(foo, bar);
-        assert_ne!(
-            parser.data.get_ref::<str>(foo),
-            parser.data.get_ref::<str>(bar)
-        );
-        assert_eq!(parser.data.get_ref::<str>(foo), "foo");
-        assert_eq!(parser.data.get_ref::<str>(bar), "bar");
+        let arg_names = parser.fun_arg_names_iter(args).collect::<Vec<_>>();
+
+        assert_eq!(vec!["foo", "bar"], arg_names);
     }
 
     #[test]
@@ -838,10 +797,7 @@ pub mod tests {
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
         // NOTE: asserts args come after the arg exprs in the exprs vec
-        assert_matches!(&parser.exprs[args..], &[
-            Expr::FunCallArg { value: 1, len: _ },
-            Expr::FunCallArg { value: 2, len: _ }
-        ])
+        assert_eq!(parser.fun_args_slice(args), &[1, 2]);
     }
 
     #[test]
@@ -850,11 +806,10 @@ pub mod tests {
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
-        let_assert_matches!(&parser.exprs[args..], &[
-            Expr::FunCallArg { value: binop_arg, len: _ },
-            Expr::FunCallArg { value: _, len: _ }
-        ]);
-        assert_matches!(parser.exprs[binop_arg], Expr::Binop { op: _, lhs: _, rhs: _ });
+        let &[binop_arg, _] = parser.fun_args_slice(args) else {
+            unreachable!();
+        };
+        assert_matches!(parser.exprs[binop_arg as usize], Expr::Binop { op: _, lhs: _, rhs: _ });
     }
 
     #[test]
@@ -863,9 +818,7 @@ pub mod tests {
         let parser = parse(contents).expect("parse error");
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
-        assert_matches!(&parser.exprs[args..], &[
-            Expr::FunCallArg { value: 0, len: 0 }
-        ])
+        assert_eq!(parser.fun_args_slice(args), &[]);
     }
 
     #[test]
