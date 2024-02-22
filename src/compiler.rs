@@ -243,6 +243,9 @@ impl Compiler {
             format!("function not found: {}", name)
         })?;
 
+        // using args_range here because rust cannot figure out
+        // that the immutable borrow of args with `ast::fun_args_slice()`
+        // is not mutated by `self.compile_expr()`
         let args_range = self.ast.args_range(args_start);
         let num_args = args_range.len();
 
@@ -250,7 +253,7 @@ impl Compiler {
             let arg = self.ast.extra[arg_i];
             self.compile_expr(arg as EIndex);
         }
-        self.emit(ByteCode::Push(self.ast.get_num_args(args_start) as u64));
+        self.emit(ByteCode::Push(num_args as u64));
         self.emit(ByteCode::Call(fun_offset));
         self.scope_stack.skip::<1>();
         Ok(())

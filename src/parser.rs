@@ -114,6 +114,16 @@ impl<'a> Parser<'a> {
         return self.tok_i == usize::MAX && !self.tokens.is_empty();
     }
 
+    /// common logic between `tok()` and `peek()`
+    /// returns ({next index to peek}, {has peeked})
+    fn _peek_i(&self) -> (usize, bool) {
+        // tok_i ?= usize::MAX -> 0
+        // else -> tok_i + 1
+        let peek_i = self.tok_i.wrapping_add(1);
+        let has_peeked = peek_i < self.tokens.len();
+        return (peek_i, has_peeked);
+    }
+
     fn tok(&mut self) -> Option<Token> {
         // peeked first token
         if self.peeked_first_tok() {
@@ -123,11 +133,12 @@ impl<'a> Parser<'a> {
         if self.tok_i == usize::MAX && !self.tokens.is_empty() {
             panic!("usize::MAX tokens reached");
         }
-        // tok_i ?= usize::MAX -> 0
-        // else -> tok_i + 1
-        self.tok_i = self.tok_i.wrapping_add(1);
+        let (peek_i, has_peeked) = self._peek_i();
 
-        let has_peeked = self.tok_i < self.tokens.len();
+        // advance tok_i regardless of whether
+        // the next token has been peeked or not
+        self.tok_i = peek_i;
+
         if has_peeked {
             let tok = self.tokens[self.tok_i];
             return Some(tok);
@@ -142,8 +153,7 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_tok(&mut self) -> Option<Token> {
-        let peek_i = self.tok_i.wrapping_add(1);
-        let has_peeked = peek_i < self.tokens.len();
+        let (peek_i, has_peeked) = self._peek_i();
         if has_peeked {
             return Some(self.tokens[peek_i])
         }
