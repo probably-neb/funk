@@ -1,4 +1,7 @@
-use std::{collections::{HashMap, hash_map::DefaultHasher}, hash::{Hash, Hasher}};
+use std::{
+    collections::{hash_map::DefaultHasher, HashMap},
+    hash::{Hash, Hasher},
+};
 
 use crate::parser;
 
@@ -16,6 +19,7 @@ impl Ast {
         return self.data.get::<T>(i);
     }
 
+    #[allow(unused)]
     pub fn get_const_ref<'a, T: ReadFromBytesRef<'a>>(&'a self, i: DIndex) -> &'a T {
         return self.data.get_ref::<T>(i);
     }
@@ -30,26 +34,27 @@ impl Ast {
 
     pub fn args_range(&self, first_arg: parser::EIndex) -> std::ops::Range<parser::EIndex> {
         let len = self.get_num_args(first_arg);
-        return first_arg..first_arg + len as usize
+        return first_arg..first_arg + len as usize;
     }
 }
-
-type ByteMapHasher = DefaultHasher;
 
 // Wraps a HashMap<u64, DIndex> to use byte slices as keys
 // by hashing the byte slice and using the resulting u64
 // as the key
 // prevents needing lifetimes everywhere
 struct ByteHashMap {
-    map: HashMap<u64, DIndex>
+    map: HashMap<u64, DIndex>,
 }
 
 impl ByteHashMap {
     fn new() -> Self {
-        return Self { map: HashMap::new()};
+        return Self {
+            map: HashMap::new(),
+        };
     }
     fn hash(&self, key: &[u8]) -> u64 {
         let mut hasher = DefaultHasher::new();
+        // PERF: figure out how to avoid hashing things twice
         key.hash(&mut hasher);
         let hash = hasher.finish();
         return hash;
@@ -71,7 +76,7 @@ pub type DIndex = usize;
 pub struct DataPool {
     pool: Pool,
     tmp: Vec<u8>,
-    map: ByteHashMap
+    map: ByteHashMap,
 }
 
 // TODO: implement hashing on write for deduplication
@@ -81,7 +86,11 @@ pub struct DataPool {
 //      strings and ints. i.e. have array of just u32's, and just string bytes
 impl DataPool {
     pub fn new() -> Self {
-        return Self { pool: vec![], map: ByteHashMap::new(), tmp: vec![]};
+        return Self {
+            pool: vec![],
+            map: ByteHashMap::new(),
+            tmp: vec![],
+        };
     }
 
     pub fn put<T: WriteBytes + ?Sized + Hash>(&mut self, val: &T) -> DIndex {
@@ -179,50 +188,128 @@ impl<'a> ReadFromBytesRef<'a> for [u8] {
     }
 }
 
+type ExtraData = u32;
+
+pub struct Extra {
+    pub data: Vec<ExtraData>,
+}
+
+impl Extra {
+    const RESERVE_VALUE: ExtraData = ExtraData::MAX;
+
+    pub fn new() -> Self {
+        return Self { data: vec![] };
+    }
+
+    pub fn get<'e, T: FromExtra<'e>>(&'e self, i: usize) -> T {
+        return T::from_extra(self, i);
+    }
+
+    pub fn reserve(&mut self) -> usize {
+        return self.append(Self::RESERVE_VALUE);
+    }
+
+    pub fn append(&mut self, val: ExtraData) -> usize {
+        let i = self.data.len();
+        self.data.push(val);
+        return i;
+    }
+}
+
+impl std::ops::Index<usize> for Extra {
+    type Output = ExtraData;
+    fn index(&self, i: usize) -> &Self::Output {
+        return &self.data[i];
+    }
+}
+
+impl std::ops::IndexMut<usize> for Extra {
+    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
+        return &mut self.data[i];
+    }
+}
+
+impl std::ops::Index<u32> for Extra {
+    type Output = ExtraData;
+    fn index(&self, i: u32) -> &Self::Output {
+        return &self.data[i as usize];
+    }
+}
+
+impl std::ops::IndexMut<u32> for Extra {
+    fn index_mut(&mut self, i: u32) -> &mut Self::Output {
+        return &mut self.data[i as usize];
+    }
+}
+
+pub trait FromExtra<'e> {
+    fn from_extra(extra: &'e Extra, i: usize) -> Self;
+}
+
+pub struct ExtraFunArgs<'e> {
+    pub len: &'e ExtraData,
+    pub args: &'e [ExtraData]
+}
+
+impl<'e> FromExtra<'e> for ExtraFunArgs<'e> {
+    fn from_extra(extra: &'e Extra, i: usize) -> Self {
+        let len = &extra.data[0];
+        let start = i + 1;
+        let end = start + *len as usize;
+        let args = &extra.data[start..end];
+        return Self { len, args };
+    }
+}
+
 #[cfg(test)]
-mod data_pool_tests {
+mod tests {
     use super::*;
 
-    macro_rules! test_read_write {
-        ($t:ty, $val:expr) => {
+    mod data_pool {
+
+        use super::*;
+
+        macro_rules! test_read_write {
+            ($t:ty, $val:expr) => {
+                let mut pool = DataPool::new();
+                let i = pool.put::<$t>(&$val);
+                let read_val = pool.get::<$t>(i);
+                assert_eq!($val, read_val);
+            };
+            (ref $t:ty, $val:expr) => {
+                let mut pool = DataPool::new();
+                let i = pool.put(&$val);
+                let read_val: &$t = pool.get_ref::<$t>(i);
+                assert_eq!($val, read_val);
+            };
+        }
+
+        #[test]
+        fn u32() {
+            test_read_write!(u32, 0x12345678);
+        }
+
+        #[test]
+        fn str() {
+            test_read_write!(ref str, "hello world");
+        }
+
+        #[test]
+        fn interned() {
             let mut pool = DataPool::new();
-            let i = pool.put::<$t>(&$val);
-            let read_val = pool.get::<$t>(i);
-            assert_eq!($val, read_val);
-        };
-        (ref $t:ty, $val:expr) => {
+            let i1 = pool.put(&"hello");
+            let i2 = pool.put(&"hello");
+            assert_eq!(i1, i2);
+        }
+
+        #[test]
+        fn interned_diff() {
             let mut pool = DataPool::new();
-            let i = pool.put(&$val);
-            let read_val: &$t = pool.get_ref::<$t>(i);
-            assert_eq!($val, read_val);
-        };
-    }
-
-    #[test]
-    fn u32() {
-        test_read_write!(u32, 0x12345678);
-    }
-
-    #[test]
-    fn str() {
-        test_read_write!(ref str, "hello world");
-    }
-
-    #[test]
-    fn interned() {
-        let mut pool = DataPool::new();
-        let i1 = pool.put(&"hello");
-        let i2 = pool.put(&"hello");
-        assert_eq!(i1, i2);
-    }
-
-    #[test]
-    fn interned_diff() {
-        let mut pool = DataPool::new();
-        let i1 = pool.put(&"foo");
-        let i2 = pool.put(&"bar");
-        assert_ne!(i1, i2);
-        assert_eq!("foo", pool.get_ref::<str>(i1));
-        assert_eq!("bar", pool.get_ref::<str>(i2));
+            let i1 = pool.put(&"foo");
+            let i2 = pool.put(&"bar");
+            assert_ne!(i1, i2);
+            assert_eq!("foo", pool.get_ref::<str>(i1));
+            assert_eq!("bar", pool.get_ref::<str>(i2));
+        }
     }
 }

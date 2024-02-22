@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 
 use crate::{
-    ast::{Ast, DIndex, DataPool},
+    ast::{Ast, DIndex, DataPool, self},
     lexer::{self, Lexer, Token},
 };
 
@@ -17,6 +17,7 @@ pub struct Parser<'a> {
     tokens: Vec<Token>,
     exprs: Vec<Expr>,
     data: DataPool,
+    extra: ast::Extra
 }
 
 #[allow(dead_code)]
@@ -95,6 +96,7 @@ impl<'a> Parser<'a> {
             exprs: Vec::new(),
             tok_i: usize::MAX,
             data: DataPool::new(),
+            extra: ast::Extra::new()
         }
     }
     pub fn new(contents: &'a str) -> Parser<'a> {
@@ -242,18 +244,23 @@ impl<'a> Parser<'a> {
             return Err(anyhow!("expected args got EOF"));
         };
         if let Token::RParen = tok {
+            let extra_args = self.extra.append(0);
             let empty_arg = self.push(Expr::FunCallArg { value: 0, len: 0 });
             return Ok(empty_arg);
         }
 
         let mut args = vec![];
 
+        let extra_args_len = self.extra.reserve();
+
         while !matches!(self.peek_tok(), Some(Token::RParen)) {
             let arg = self.expr().context("expected arg")??;
+            self.extra.append(arg as u32);
             args.push(arg);
         }
 
         let len = args.len() as u8;
+        self.extra[extra_args_len] = len as u32;
         let first = self.push(Expr::FunCallArg{ value: args[0], len});
 
         for arg in args.into_iter().skip(1) {
@@ -307,6 +314,9 @@ impl<'a> Parser<'a> {
         let Some(tok) = self.tok() else {
             return Err(anyhow!("expected args got EOF"));
         };
+
+        let extra_args_len = self.extra.reserve();
+
         if let Token::RParen = tok {
             let emtpy_arg = self.push(Expr::FunArg { name: 0, len: 0 });
             return Ok(emtpy_arg);
@@ -315,6 +325,7 @@ impl<'a> Parser<'a> {
             return Err(anyhow!("incomplete args"));
         };
         let first_name = self.intern_str(first_range);
+        self.extra.append(first_name as u32);
         let first = self.reserve();
 
         let mut num = 1_u8;
@@ -322,9 +333,11 @@ impl<'a> Parser<'a> {
         while let Some(Token::Ident(range)) = self.tok() {
             num += 1;
             let name = self.intern_str(range);
-            self.push(dbg!(Expr::FunArg { name, len: num }));
+            self.extra.append(name as u32);
+            self.push(Expr::FunArg { name, len: num });
         }
 
+        self.extra[extra_args_len] = num as u32;
         self.exprs[first] = Expr::FunArg {
             name: first_name,
             len: num,
@@ -346,6 +359,7 @@ impl<'a> Parser<'a> {
         Ok(bind_i)
     }
 
+    #[allow(unused)]
     fn get_num_args(&self, first_arg: EIndex) -> u8 {
         match self.exprs[first_arg] {
             Expr::FunArg { len, .. } => len,
@@ -739,6 +753,40 @@ pub mod tests {
         let_assert_matches!(parser.exprs[rhs], Expr::Ident(b));
         assert_eq!(parser.data.get_ref::<str>(a), "a");
         assert_eq!(parser.data.get_ref::<str>(b), "b");
+    }
+
+    #[test]
+    fn fun_extra_data() {
+        let contents = "(fun foo (a b c d) (a))";
+        let parser = parse(contents).expect("parser error");
+
+        let ast::ExtraFunArgs {len, args} = parser.extra.get::<ast::ExtraFunArgs>(0);
+
+        assert_eq!(*len, 4);
+
+        let arg_strs: Vec<&str> = args.iter().map(|a| parser.data.get_ref::<str>(*a as usize)).collect();
+        let expected_arg_strs = vec!["a", "b", "c", "d"];
+
+        assert_eq!(arg_strs, expected_arg_strs);
+    }
+
+    #[test]
+    fn fun_call_extra_data() {
+        let contents = "(foo 0 1 2 3)";
+        let parser = parse(contents).expect("parser error");
+
+        let ast::ExtraFunArgs {len, args} = parser.extra.get::<ast::ExtraFunArgs>(0);
+
+        assert_eq!(*len, 4);
+
+        dbg!(args);
+        for i in 0..*len {
+            let arg = args[i as usize];
+            let_assert_matches!(parser.exprs[arg as usize], Expr::Int(di));
+            dbg!(di);
+            let data = dbg!(parser.data.get::<u64>(di));
+            assert_eq!(data, i as u64);
+        }
     }
 
     #[test]
