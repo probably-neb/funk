@@ -3,6 +3,7 @@ mod parser;
 mod ast;
 mod compiler;
 mod rt;
+mod fir;
 
 use anyhow::Result;
 

@@ -376,7 +376,7 @@ impl<'a> Parser<'a> {
 pub enum Binop {
     Eq,
     Mul,
-    Plus,
+    Add,
     Minus,
     Div,
     Lt,
@@ -390,7 +390,7 @@ impl From<Token> for Binop {
         match value {
             Token::Eq => Binop::Eq,
             Token::Mul => Binop::Mul,
-            Token::Plus => Binop::Plus,
+            Token::Plus => Binop::Add,
             Token::Minus => Binop::Minus,
             Token::Div => Binop::Div,
             Token::Lt => Binop::Lt,

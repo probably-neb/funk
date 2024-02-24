@@ -13,9 +13,7 @@ struct Runtime<'chunk> {
     chunk: &'chunk Chunk,
     stack: Stack,
     pc: usize,
-    vars: Vec<i64>,
-    call_stack: Vec<CallFrame>,
-    current_frame_offset: usize,
+    fp_stack: Vec<usize>
 }
 
 impl<'chunk> Runtime<'chunk> {
@@ -24,9 +22,7 @@ impl<'chunk> Runtime<'chunk> {
             chunk,
             stack: Vec::new(),
             pc: 0,
-            vars: Vec::new(),
-            call_stack: vec![],
-            current_frame_offset: 0,
+            fp_stack: Vec::new()
         }
     }
 
@@ -97,32 +93,23 @@ impl<'chunk> Runtime<'chunk> {
             // results in (1 - ...) being the implementation of equals
             ByteCode::Eq => 1 - ((lhs == rhs) as i64),
             ByteCode::LtEq => 1 - ((lhs <= rhs) as i64),
+            ByteCode::Gt => 1 - ((lhs > rhs) as i64),
             _ => unimplemented!("op: {:?} not implemented", bc),
         };
         self.stack.push(res);
         Ok(())
     }
 
-    fn ensure_var_cap(&mut self, idx: usize) {
-        if idx >= self.vars.len() {
-            // NOTE: assumes uninitialized vars won't be accessed
-            self.vars.resize(idx + 1, 0);
-        }
-    }
-
     fn exec_store_local(&mut self, idx: u32) -> Result<()> {
         let val = self.stack.pop().context("stack underflow")?;
-        let offset = self.current_frame_offset;
-        let idx = idx as usize + offset;
-        self.ensure_var_cap(idx);
-        self.vars[idx] = val;
+        let idx = self.stack.len() - idx as usize;
+        self.stack[idx] = val;
         Ok(())
     }
 
-    fn exec_load_local(&mut self, idx: u32) -> Result<()> {
-        let offset = self.current_frame_offset;
-        let idx = idx as usize + offset;
-        let val = self.vars[idx];
+    fn exec_load_local(&mut self, offset: u32) -> Result<()> {
+        let idx = self.stack.len() - offset as usize - 1;
+        let val = self.stack[idx];
         self.stack.push(val);
         Ok(())
     }
@@ -134,41 +121,30 @@ impl<'chunk> Runtime<'chunk> {
         Ok(())
     }
 
-    fn exec_call(&mut self, idx: u32) -> Result<()> {
-        let addr = idx as usize;
-        let fp = self.vars.len();
-        let n_args = self.stack.pop().context("stack underflow")?;
-        for _ in 0..n_args {
-            let val = self.stack.pop().context("stack underflow")?;
-            self.vars.push(val);
-        }
-        let pc = self.pc;
-        self.call_stack.push(CallFrame {
-            pc,
-            heap_offset: fp,
-        });
-        self.current_frame_offset = fp;
-        self.pc = addr;
+    fn exec_call(&mut self, addr: u32) -> Result<()> {
+        let fp = self.stack.len() - 1;
+        self.fp_stack.push(fp);
+        self.stack.push(self.pc as i64);
+        self.pc = addr as usize;
         Ok(())
     }
 
     fn exec_ret(&mut self) -> Result<()> {
-        let frame = self.call_stack.pop().context("call stack underflow")?;
-        self.pc = frame.pc;
-        self.vars.truncate(frame.heap_offset);
+        let fp = self.fp_stack.pop().expect("return in function");
 
-        if let Some(frame) = self.call_stack.last() {
-            self.current_frame_offset = frame.heap_offset;
-        } else {
-            self.current_frame_offset = 0;
-        }
+        let n_args = self.stack[fp];
+        let pc = self.stack[fp + 1];
+        self.pc = pc as usize;
+        let frame_offset = fp - n_args as usize;
+
+        let res = *self.stack.last().expect("has res");
+        self.stack[frame_offset] = res;
+
+
+        self.stack.truncate(frame_offset + 1);
+
         Ok(())
     }
-}
-
-struct CallFrame {
-    pc: usize,
-    heap_offset: usize,
 }
 
 #[cfg(test)]
@@ -208,10 +184,6 @@ mod test {
 
     #[test]
     fn lteq() {
-        // lt
-        let stack = run_src("(if (<= 1 2) 3 4)");
-        assert_eq!(stack, vec![3]);
-        // eq
         let stack = run_src("(if (<= 2 2) 3 4)");
         assert_eq!(stack, vec![3]);
     }
@@ -219,7 +191,27 @@ mod test {
     #[test]
     fn use_var() {
         let stack = run_src("(let x 1) (+ x 2)");
+        assert_eq!(stack, vec![1, 3]);
+    }
+
+    #[test]
+    fn simple_fun_call() {
+        let stack = run_src("(fun add (a b) (+ a b)) (add 1 2)");
         assert_eq!(stack, vec![3]);
+    }
+
+    #[test]
+    fn countdown() {
+        let contents = r#"
+            (fun countdown (n) (
+                if (> n 0)
+                    (countdown (- n 1))
+                    n
+            ))
+            (countdown 10)
+        "#;
+        let stack = run_src(contents);
+        assert_eq!(stack, vec![0]);
     }
 
     #[test]
@@ -229,9 +221,9 @@ mod test {
                 if (<= n 1)
                     n
                     (+
-                              (fib (- n 1))
-                              (fib (- n 2))
-                              )
+                      (fib (- n 1))
+                      (fib (- n 2))
+                      )
                 )
            )
 

@@ -223,6 +223,12 @@ impl Extra {
         self.data.push(val);
         return i;
     }
+
+    pub fn append_u32(&mut self, val: ExtraData) -> u32 {
+        let i = self.data.len();
+        self.data.push(val);
+        return i as u32;
+    }
 }
 
 impl std::ops::Index<usize> for Extra {

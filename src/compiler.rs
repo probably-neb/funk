@@ -28,7 +28,7 @@ pub enum ByteCode {
 impl From<Binop> for ByteCode {
     fn from(op: Binop) -> Self {
         match op {
-            Binop::Plus => ByteCode::Add,
+            Binop::Add => ByteCode::Add,
             Binop::Minus => ByteCode::Sub,
             Binop::Mul => ByteCode::Mul,
             Binop::Div => ByteCode::Div,
@@ -85,6 +85,11 @@ impl Compiler {
         Some(expr)
     }
 
+    fn dbg_visited(&self) {
+        let visited = self.visited.iter().zip(&self.ast.exprs).collect::<Vec<_>>();
+        dbg!(visited);
+    }
+
     fn mark_visited(&mut self, expr_i: usize) {
         self.visited[expr_i] = true;
     }
@@ -128,8 +133,8 @@ impl Compiler {
     }
 
     fn compile_expr(&mut self, i: EIndex) {
-        self._compile_expr(self.ast.exprs[i]);
         self.mark_visited(i);
+        self._compile_expr(self.ast.exprs[i]);
     }
 
     fn compile_binop(&mut self, op: Binop, lhs: EIndex, rhs: EIndex) {
