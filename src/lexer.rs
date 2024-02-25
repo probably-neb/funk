@@ -81,60 +81,74 @@ impl<'a> Lexer<'a> {
     }
 
     fn step(&mut self) {
-        if self.read_position >= self.input.len() {
-            self.ch = 0;
-        } else {
-            self.ch = self.input[self.read_position];
-        }
+        self.ch = self.peek();
 
         self.position = self.read_position;
         self.read_position += 1;
     }
 
-    fn expect(&mut self, byte: u8) {
-        self.step();
-        if self.ch != byte {
-            panic!("unexpected char {} in input, expected {}", self.ch, self.ch)
-        }
-    }
-
-    fn peek(&self) -> u8 {
-        if self.read_position >= self.input.len() {
-            return 0;
-        } else {
-            return self.input[self.read_position];
-        }
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.ch.is_ascii_whitespace() {
+    fn step_while<F>(&mut self, f: F)
+    where
+        F: Fn(u8) -> bool,
+    {
+        while f(self.ch) {
             self.step();
         }
     }
 
+    fn step_then_expect(&mut self, byte: u8) {
+        self.step();
+        assert_eq!(
+            self.ch, byte,
+            "unexpected char {} in input, expected {}",
+            self.ch, self.ch
+        );
+    }
+
+    fn expect_then_step(&mut self, byte: u8) {
+        assert_eq!(
+            self.ch, byte,
+            "unexpected char {} in input, expected {}",
+            self.ch, self.ch
+        );
+        self.step();
+    }
+
+    fn peek(&self) -> u8 {
+        return if self.read_position >= self.input.len() {
+            0
+        } else {
+            self.input[self.read_position]
+        };
+    }
+
+    fn skip_whitespace(&mut self) {
+        self.step_while(|ch| ch.is_ascii_whitespace());
+    }
+
     fn ident_or_builtin(&mut self) -> Token {
         let range = self.read_ident();
+        debug_assert_ne!(range.0, range.1);
         let slice = self.slice(&range);
-        if let Some(tok) = KEYWORDS.get(slice) {
-            return *tok;
+        if let Some(kw) = KEYWORDS.get(slice) {
+            return *kw;
         }
         return Token::Ident(range);
     }
 
     fn read_ident(&mut self) -> Range {
         let pos = self.position;
-        while self.ch.is_ascii_alphabetic() || self.ch == b'_' {
-            self.step();
-        }
+
+        let is_valid_ident_char = |ch: u8| ch.is_ascii_alphabetic() || ch == b'_';
+
+        self.step_while(is_valid_ident_char);
 
         return (pos, self.position);
     }
 
     fn read_numeric(&mut self) -> Token {
         let pos = self.position;
-        while self.ch.is_ascii_digit() {
-            self.step();
-        }
+        self.step_while(|ch| ch.is_ascii_digit());
         if self.ch == b'.' || self.ch == b'e' {
             self.step();
             return Token::Float(self.read_float(pos));
@@ -143,34 +157,33 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_float(&mut self, start: usize) -> Range {
-        while self.ch.is_ascii_digit() {
-            self.step();
-        }
+        self.step_while(|ch| ch.is_ascii_digit());
         if self.ch == b'e' {
             self.step();
             if self.ch == b'-' || self.ch == b'+' {
                 self.step();
             }
-            while self.ch.is_ascii_digit() {
-                self.step();
-            }
+            self.step_while(|ch| ch.is_ascii_digit());
         }
         return (start, self.position);
     }
 
     fn read_string(&mut self) -> Range {
         let pos = self.position + 1;
-        while self.peek() != b'"' && self.ch != 0 {
-            self.step();
-        }
-        self.step();
+        // eat `"`
+        self.expect_then_step(b'"');
+        // debug_assert_eq!(self.ch, b'"');
+        // self.step();
+        self.step_while(|ch| ch != b'"' && ch != 0);
+        // reached end of input while in string
+        debug_assert_ne!(self.ch, 0);
         return (pos, self.position);
     }
 
     fn read_char(&mut self) -> usize {
         let pos = self.position + 1;
         self.step();
-        self.expect(b'\'');
+        self.step_then_expect(b'\'');
         return pos;
     }
 
@@ -204,9 +217,10 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    // TODO: don't take ptr to range here
     pub fn slice(&self, range: &Range) -> &[u8] {
-        let start = range.0;
-        let end = range.1.min(self.input.len());
+        let (start, end) = *range;
+        debug_assert!(end <= self.input.len());
         return &self.input[start..end];
     }
 
