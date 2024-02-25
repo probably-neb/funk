@@ -218,7 +218,8 @@ impl<'a> Parser<'a> {
 
     fn intern_int(&mut self, range: lexer::Range) -> DIndex {
         let bytes = self.lxr.slice(&range);
-        let val = unsafe { std::str::from_utf8_unchecked(bytes) }
+        let val_str = unsafe { std::str::from_utf8_unchecked(bytes) };
+        let val = val_str
             // TODO: support alternative int sizes
             .parse::<u64>()
             .expect("invalid int");
@@ -348,7 +349,7 @@ impl<'a> Parser<'a> {
             unreachable!()
         };
         let name = self.intern_str(range);
-        let value = self.expr().unwrap()?;
+        let value = self.expr().expect("no value in bind expr")?;
         eat!(self, Token::RParen)?;
         self.exprs[bind_i] = Expr::Bind { name, value };
         Ok(bind_i)
@@ -377,7 +378,7 @@ pub enum Binop {
     Eq,
     Mul,
     Add,
-    Minus,
+    Sub,
     Div,
     Lt,
     LtEq,
@@ -391,7 +392,7 @@ impl From<Token> for Binop {
             Token::Eq => Binop::Eq,
             Token::Mul => Binop::Mul,
             Token::Plus => Binop::Add,
-            Token::Minus => Binop::Minus,
+            Token::Minus => Binop::Sub,
             Token::Div => Binop::Div,
             Token::Lt => Binop::Lt,
             Token::LtEq => Binop::LtEq,

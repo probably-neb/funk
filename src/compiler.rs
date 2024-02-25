@@ -29,7 +29,7 @@ impl From<Binop> for ByteCode {
     fn from(op: Binop) -> Self {
         match op {
             Binop::Add => ByteCode::Add,
-            Binop::Minus => ByteCode::Sub,
+            Binop::Sub => ByteCode::Sub,
             Binop::Mul => ByteCode::Mul,
             Binop::Div => ByteCode::Div,
             Binop::Eq => ByteCode::Eq,
