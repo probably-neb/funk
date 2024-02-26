@@ -10,9 +10,13 @@ type XIndex = usize;
 #[derive(Debug, Clone, Copy)]
 pub enum Op {
     /// function definition
-    FunDef,
+    FunDef {
+        name: DIndex,
+        retty: TypeRef
+    },
+    FunEnd,
     /// function arg decl
-    FunArg,
+    FunArg(TypeRef),
     /// function call.
     /// fun is a ref to the FIR FunDef node
     /// args points to a slice of Fir Refs in extra
@@ -24,9 +28,9 @@ pub enum Op {
     /// declare a local variable
     /// NOTE: these should be hoisted to the top of the function body
     /// for eaasier codegen
-    Alloc,
+    Alloc(TypeRef),
     Load(Ref),
-    Store(Ref),
+    Store(Ref, Ref),
     Add(Ref, Ref),
     Sub(Ref, Ref),
     Mul(Ref, Ref),
@@ -48,12 +52,13 @@ impl Op {
     fn name(&self) -> &'static str {
         use Op::*;
         match self {
-            FunDef => "def",
-            FunArg => "arg",
+            FunDef {..} => "define",
+            FunEnd => "fun_end",
+            FunArg(_) => "arg",
             FunCall { .. } => "call",
-            Alloc => "alloc",
+            Alloc(_) => "alloc",
             Load(_) => "load",
-            Store(_) => "store",
+            Store(_, _) => "store",
             Add(_, _) => "add",
             Sub(_, _) => "sub",
             Mul(_, _) => "mul",
@@ -174,13 +179,18 @@ pub enum TypeRef {
 struct FIRStringifier<'fir> {
     fir: &'fir FIR,
     str: String,
+    in_func: bool,
 }
 
 impl<'fir> FIRStringifier<'fir> {
+
+    const INDENT: &'static str = "  ";
+
     fn stringify(fir: &'fir FIR) -> String {
-        let mut this = Self {
+        let this = Self {
             fir,
             str: String::new(),
+            in_func: false,
         };
         return this._stringify();
     }
@@ -197,6 +207,33 @@ impl<'fir> FIRStringifier<'fir> {
                     self.inst_i_eq(i);
                     self.func_2(name, |s| s.write_ref(lhs), |s| s.write_ref(rhs));
                 }
+                Op::FunDef { name, retty } => {
+                    assert!(!self.in_func, "nested functions not supported");
+                    self.write("define");
+                    self.space();
+                    self.write_type_ref(retty);
+                    self.space();
+                    self.func_ref(*name);
+                    self.space();
+                    self.write("{");
+                    self.in_func = true;
+                }
+                Op::FunArg(ty) => {
+                    assert!(self.in_func, "arg decl outside of function");
+                    self.inst_i_eq(i);
+                    self.func_1("arg", |s| s.write_type_ref(ty));
+                }
+                Op::FunEnd => {
+                    self.in_func = false;
+                    self.write("}");
+                }
+                Op::Alloc(ty) => {
+                    self.inst_i_eq(i);
+                    self.func_1("alloc", |s| s.write_type_ref(ty));
+                }
+                Op::Store(dest, src) => {
+                    self.func_2("store", |s| s.write_ref(dest), |s| s.write_ref(src));
+                }
                 _ => unimplemented!("FIR op {:?} not implemented", inst),
             };
             if i < self.fir.ops.len() {
@@ -212,6 +249,13 @@ impl<'fir> FIRStringifier<'fir> {
 
     fn newline(&mut self) {
         self.write("\n");
+        if self.in_func {
+            self.write(Self::INDENT);
+        }
+    }
+
+    fn space(&mut self) {
+        self.write(" ");
     }
 
     fn func_1<F>(&mut self, name: &str, arg: F)
@@ -238,12 +282,18 @@ impl<'fir> FIRStringifier<'fir> {
     }
 
     fn inst_i(&mut self, i: u32) {
-        self.write(&format!("%{i}"));
+        self.write("%");
+        self.write(i.to_string().as_str());
     }
 
     fn inst_i_eq(&mut self, i: usize) {
         self.inst_i(i as u32);
         self.write(" = ");
+    }
+
+    fn func_ref(&mut self, i: DIndex) {
+        self.write("@");
+        self.write_ident(i);
     }
 
     fn write_ref(&mut self, r: &Ref) {
@@ -262,6 +312,11 @@ impl<'fir> FIRStringifier<'fir> {
         let str = match ty {
             IntU64 => "u64",
         };
+        self.write(str);
+    }
+
+    fn write_ident(&mut self, i: DIndex) {
+        let str = self.fir.data.get_ref::<str>(i);
         self.write(str);
     }
 }
