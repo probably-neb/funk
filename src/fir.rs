@@ -12,7 +12,7 @@ pub enum Op {
     /// function definition
     FunDef {
         name: DIndex,
-        retty: TypeRef
+        retty: TypeRef,
     },
     FunEnd,
     /// function arg decl
@@ -52,7 +52,7 @@ impl Op {
     fn name(&self) -> &'static str {
         use Op::*;
         match self {
-            FunDef {..} => "define",
+            FunDef { .. } => "define",
             FunEnd => "fun_end",
             FunArg(_) => "arg",
             FunCall { .. } => "call",
@@ -140,9 +140,24 @@ impl FIRGen {
             Expr::Binop { op, lhs, rhs } => self.gen_binop(op, lhs, rhs),
 
             Expr::Int(val) => {
+                // TODO: remove this inderection
                 let i = self.extra.append_u32(val as u32);
-                let op_i = self.push(Op::Load(Ref::Const(TypeRef::IntU64, i)));
+                let ty = TypeRef::IntU64;
+                let const_op = Ref::Const(ty, i);
+                let load_op = Op::Load(const_op);
+                let op_i = self.push(load_op);
                 return Ok(op_i);
+            }
+            Expr::Bind { name, value } => {
+                let ty = TypeRef::IntU64;
+                // FIXME: hoist!
+                let alloc_i = self.push(Op::Alloc(ty));
+                let value_i = self.gen_expr(value)?;
+                let alloc_ref = Ref::Inst(alloc_i as u32);
+                let value_ref = Ref::Inst(value_i as u32);
+                let store_op = Op::Store(alloc_ref, value_ref);
+                let store_i = self.push(store_op);
+                return Ok(store_i);
             }
             _ => unimplemented!("unimplemented expr {:?}", expr),
         }
@@ -183,7 +198,6 @@ struct FIRStringifier<'fir> {
 }
 
 impl<'fir> FIRStringifier<'fir> {
-
     const INDENT: &'static str = "  ";
 
     fn stringify(fir: &'fir FIR) -> String {
@@ -455,12 +469,12 @@ mod tests {
         fn fundef() {
             assert_fir_str_eq!(
                 "(fun add (a b) (+ a b))",
-                "define u64 @add (",
+                "define u64 @add {",
                 "  %0 = arg(u64)",
                 "  %1 = arg(u64)",
                 "  %2 = add(%0, %1)",
                 "  %3 = ret(%2)",
-                ")"
+                "}"
             );
         }
 
@@ -468,12 +482,12 @@ mod tests {
         fn funcall() {
             assert_fir_str_eq!(
                 "(fun add (a b) (+ a b)) (add 1 2)",
-                "define u64 @add (",
+                "define u64 @add {",
                 "  %0 = arg(u64)",
                 "  %1 = arg(u64)",
                 "  %2 = add(%0, %1)",
                 "  %3 = ret(%2)",
-                ")",
+                "}",
                 "%0 = load(const(u64, 1))",
                 "%1 = load(const(u64, 2))",
                 "%2 = call(@add, [%0, %1])"
@@ -489,6 +503,5 @@ mod tests {
                 "store(%0, %1)"
             );
         }
-
     }
 }
