@@ -378,5 +378,62 @@ mod tests {
                 "%8 = add(%0, %7)"
             );
         }
+
+        #[test]
+        fn if_expr() {
+            assert_fir_str_eq!(
+                "(if (== 1 2) 3 4)",
+                "%0 = load(const(u64, 1))",
+                "%1 = load(const(u64, 2))",
+                "%2 = cmp_eq(u64, %0, %1)",
+                "br(%2, %3, %4)",
+                "%3 = label()",
+                "jmp(%5)",
+                "%4 = label()",
+                "jmp(%5)",
+                "%5 = label()",
+                "%6 = load(phi(u64, [%3, const(u64, 3)], [%4, const(u64, 4)]))"
+            );
+        }
+
+        #[test]
+        fn fundef() {
+            assert_fir_str_eq!(
+                "(fun add (a b) (+ a b))",
+                "define u64 @add (",
+                "  %0 = arg(u64)",
+                "  %1 = arg(u64)",
+                "  %2 = add(%0, %1)",
+                "  %3 = ret(%2)",
+                ")"
+            );
+        }
+
+        #[test]
+        fn funcall() {
+            assert_fir_str_eq!(
+                "(fun add (a b) (+ a b)) (add 1 2)",
+                "define u64 @add (",
+                "  %0 = arg(u64)",
+                "  %1 = arg(u64)",
+                "  %2 = add(%0, %1)",
+                "  %3 = ret(%2)",
+                ")",
+                "%0 = load(const(u64, 1))",
+                "%1 = load(const(u64, 2))",
+                "%2 = call(@add, [%0, %1])"
+            );
+        }
+
+        #[test]
+        fn bind() {
+            assert_fir_str_eq!(
+                "(let a 1)",
+                "%0 = alloc(u64)",
+                "%1 = load(const(u64, 1))",
+                "store(%0, %1)"
+            );
+        }
+
     }
 }
