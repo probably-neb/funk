@@ -24,6 +24,7 @@ pub enum Op {
         // expen
         args: XIndex,
     },
+    Ret(Ref),
     /// declare a local variable
     /// NOTE: these should be hoisted to the top of the function body
     /// for eaasier codegen
@@ -105,7 +106,7 @@ impl FIRGen {
         self.types.push(TypeRef::None);
         self.scopes.skip::<1>();
         debug_assert_eq!(self.ops.len(), self.types.len());
-        return i;
+        return i - self.scopes.cur;
     }
 
     fn push_typed(&mut self, op: Op, ty: TypeRef) -> usize {
@@ -114,7 +115,7 @@ impl FIRGen {
         self.types.push(ty);
         self.scopes.skip::<1>();
         debug_assert_eq!(self.ops.len(), self.types.len());
-        return i;
+        return i - self.scopes.cur;
     }
 
     fn push_named(&mut self, op: Op, name: DIndex, ty: TypeRef) -> usize {
@@ -123,7 +124,7 @@ impl FIRGen {
         self.types.push(ty);
         self.scopes.bind_local(name);
         debug_assert_eq!(self.ops.len(), self.types.len());
-        return i;
+        return i - self.scopes.cur;
     }
 
     fn mark_visited(&mut self, cursor: usize) {
@@ -167,13 +168,19 @@ impl FIRGen {
                 let fun_def_op = Op::FunDef { name };
                 let ty = TypeRef::IntU64;
                 let fun_def_i = self.push_typed(fun_def_op, ty);
-                let n_args = self.ast.get_num_args(args);
-                for _ in 0..n_args {
+                self.scopes.start_new();
+                // FIXME: `to_owned` here because rust cannot determine that
+                // `self.push_named` does not mutate the contents of `args_iter`
+                let args_iter = self.ast.fun_args_slice(args).to_owned().into_iter();
+                for arg in args_iter {
                     let ty = TypeRef::IntU64;
-                    self.push_typed(Op::FunArg, ty);
+                    let arg = arg as usize;
+                    self.push_named(Op::FunArg,arg, ty);
                 }
-                self.gen_expr(body)?;
+                let res = self.gen_expr(body)?;
+                self.push(Op::Ret(Ref::Inst(res as u32)));
                 self.push(Op::FunEnd);
+                self.scopes.end();
                 return Ok(fun_def_i);
             }
             _ => unimplemented!("unimplemented expr {:?}", expr),
@@ -196,8 +203,8 @@ impl FIRGen {
         Ok(i)
     }
 
-    fn resolve_ident(&self, i: DIndex) -> Result<Ref> {
-        let i = self.scopes.get(i).context("undefined variable")?;
+    fn resolve_ident(&self, name: DIndex) -> Result<Ref> {
+        let i = self.scopes.get(name).context("undefined variable")?;
         return Ok(Ref::Inst(i));
     }
 }
@@ -216,6 +223,7 @@ pub enum TypeRef {
     IntU64,
 }
 
+#[derive(Debug)]
 struct ScopeStack {
     stack_map: Vec<DIndex>,
     starts: Vec<usize>,
@@ -277,7 +285,7 @@ impl ScopeStack {
         if pos < self.cur {
             unimplemented!("tried to get reference to variable outside of stack frame. globals not implemented");
         }
-        return Some(pos as u32);
+        return Some((pos - self.cur) as u32);
     }
 
     fn set(&mut self, i: u32, name: DIndex) {
@@ -293,7 +301,7 @@ impl ScopeStack {
 struct FIRStringifier<'fir> {
     fir: &'fir FIR,
     str: String,
-    in_func: bool,
+    cur_func_i: Option<usize>,
 }
 
 #[allow(dead_code)]
@@ -304,7 +312,7 @@ impl<'fir> FIRStringifier<'fir> {
         let this = Self {
             fir,
             str: String::new(),
-            in_func: false,
+            cur_func_i: None
         };
         return this._stringify();
     }
@@ -314,15 +322,14 @@ impl<'fir> FIRStringifier<'fir> {
             match inst {
                 Op::Load(r) => {
                     self.inst_eq(i);
-                    self.func_1("load", |s| s.write_ref(r));
+                    self.op_func_1_ref(inst, r);
                 }
                 Op::Add(lhs, rhs) | Op::Sub(lhs, rhs) | Op::Mul(lhs, rhs) => {
-                    let name = self.get_op_name(*inst);
                     self.inst_eq(i);
-                    self.func_2(name, |s| s.write_ref(lhs), |s| s.write_ref(rhs));
+                    self.op_func_2_ref_ref(inst, lhs, rhs);
                 }
                 Op::FunDef { name } => {
-                    assert!(!self.in_func, "nested functions not supported");
+                    assert!(!self.in_func(), "nested functions not supported");
                     self.write("define");
                     self.space();
                     let return_ty = &self.fir.types[i];
@@ -331,29 +338,38 @@ impl<'fir> FIRStringifier<'fir> {
                     self.func_ref(*name);
                     self.space();
                     self.write("{");
-                    self.in_func = true;
+                    self.cur_func_i = Some(i + 1);
                 }
                 Op::FunArg => {
-                    assert!(self.in_func, "arg decl outside of function");
+                    assert!(self.in_func(), "arg decl outside of function");
                     self.inst_eq(i);
                     let ty = &self.fir.types[i];
-                    self.func_1("arg", |s| s.write_type_ref(ty));
+                    self.op_func_1_ty(inst, ty);
+                }
+                Op::Ret(r) => {
+                    self.inst_eq(i);
+                    self.op_func_1_ref(inst, r);
                 }
                 Op::FunEnd => {
-                    self.in_func = false;
                     self.write("}");
                 }
                 Op::Alloc => {
                     self.inst_eq(i);
                     let ty = &self.fir.types[i];
-                    self.func_1("alloc", |s| s.write_type_ref(ty));
+                    self.op_func_1_ty(inst, ty);
                 }
                 Op::Store(dest, src) => {
-                    self.func_2("store", |s| s.write_ref(dest), |s| s.write_ref(src));
+                    self.op_func_2_ref_ref(inst, dest, src);
                 }
                 _ => unimplemented!("FIR op {:?} not implemented", inst),
             };
-            if i < self.fir.ops.len() {
+            let next_is_fun_end = matches!(self.fir.ops.get(i + 1), Some(Op::FunEnd));
+            if next_is_fun_end {
+                // set here so the newline is not printed with indent before closing brace
+                self.cur_func_i = None;
+            }
+            let not_at_last_op = i < self.fir.ops.len();
+            if not_at_last_op {
                 self.newline();
             }
         }
@@ -366,7 +382,7 @@ impl<'fir> FIRStringifier<'fir> {
 
     fn newline(&mut self) {
         self.write("\n");
-        if self.in_func {
+        if self.in_func() {
             self.write(Self::INDENT);
         }
     }
@@ -385,6 +401,27 @@ impl<'fir> FIRStringifier<'fir> {
         self.write(")");
     }
 
+    fn op_func_1<F>(&mut self, op: Op, arg: F) where F: FnOnce(&mut Self) {
+        let name = self.get_op_name(op);
+        self.func_1(name, arg);
+    }
+
+    fn op_func_1_ref(&mut self, op: &Op, arg: &Ref) {
+        let name = self.get_op_name(*op);
+        self.write(name);
+        self.write("(");
+        self.write_ref(arg);
+        self.write(")");
+    }
+
+    fn op_func_1_ty(&mut self, op: &Op, arg: &TypeRef) {
+        let name = self.get_op_name(*op);
+        self.write(name);
+        self.write("(");
+        self.write_type_ref(arg);
+        self.write(")");
+    }
+
     fn func_2<F1, F2>(&mut self, name: &str, arg1: F1, arg2: F2)
     where
         F1: FnOnce(&mut Self),
@@ -398,12 +435,34 @@ impl<'fir> FIRStringifier<'fir> {
         self.write(")");
     }
 
+    fn op_func_2<F1, F2>(&mut self, op: Op, arg1: F1, arg2: F2)
+    where
+        F1: FnOnce(&mut Self),
+        F2: FnOnce(&mut Self),
+    {
+        let name = self.get_op_name(op);
+        self.func_2(name, arg1, arg2);
+    }
+    fn op_func_2_ref_ref(&mut self, op: &Op, arg1: &Ref, arg2: &Ref)
+    {
+        let name = self.get_op_name(*op);
+        self.write(name);
+        self.write("(");
+        self.write_ref(arg1);
+        self.write(", ");
+        self.write_ref(arg2);
+        self.write(")");
+    }
+
     fn inst_ref(&mut self, i: u32) {
         self.write("%");
         self.write(i.to_string().as_str());
     }
 
-    fn inst_eq(&mut self, i: usize) {
+    fn inst_eq(&mut self, mut i: usize) {
+        if let Some(func_offset) = self.cur_func_i {
+            i -= func_offset;
+        }
         self.inst_ref(i as u32);
         self.write(" = ");
     }
@@ -445,6 +504,7 @@ impl<'fir> FIRStringifier<'fir> {
             FunEnd => "fun_end",
             FunArg => "arg",
             FunCall { .. } => "call",
+            Ret(_) => "ret",
             Alloc => "alloc",
             Load(_) => "load",
             Store(_, _) => "store",
@@ -465,6 +525,10 @@ impl<'fir> FIRStringifier<'fir> {
     fn op_name(&mut self, op: Op) {
         let str = self.get_op_name(op);
         self.write(str);
+    }
+
+    fn in_func(&self) -> bool {
+        return self.cur_func_i.is_some();
     }
 }
 
@@ -529,6 +593,24 @@ mod tests {
                 Load(Ref::Const(TypeRef::IntU64, 0)),
                 Load(Ref::Const(TypeRef::IntU64, 1)),
                 Add(Ref::Inst(0), Ref::Inst(1))
+            ]
+        );
+    }
+
+    #[test]
+    fn fundef() {
+        use Op::*;
+        assert_results_in_fir!(
+            "(fun add (a b) (+ a b))",
+            [
+            FunDef {..},
+            FunArg,
+            FunArg,
+            Load(Ref::Inst(0)),
+            Load(Ref::Inst(1)),
+            Add(Ref::Inst(2), Ref::Inst(3)),
+            Ret(Ref::Inst(4)),
+            FunEnd
             ]
         );
     }
@@ -605,8 +687,10 @@ mod tests {
                 "define u64 @add {",
                 "  %0 = arg(u64)",
                 "  %1 = arg(u64)",
-                "  %2 = add(%0, %1)",
-                "  %3 = ret(%2)",
+                "  %2 = load(%0)",
+                "  %3 = load(%1)",
+                "  %4 = add(%2, %3)",
+                "  %5 = ret(%4)",
                 "}"
             );
         }
