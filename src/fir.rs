@@ -57,7 +57,12 @@ pub struct FIR {
 
 impl FIR {
     fn new(ops: Vec<Op>, extra: Extra, data: ast::DataPool, types: Vec<TypeRef>) -> Self {
-        return Self { ops, extra, data, types };
+        return Self {
+            ops,
+            extra,
+            data,
+            types,
+        };
     }
 
     fn get_const(&self, i: u32) -> u64 {
@@ -141,16 +146,19 @@ impl FIRGen {
             Expr::Binop { op, lhs, rhs } => self.gen_binop(op, lhs, rhs),
             Expr::Ident(name) => {
                 let i = self.resolve_ident(name)?;
-                let load_i = self.push(Op::Load(i));
+                let ty = self.types[i as usize];
+                let load_op = Op::Load(Ref::Inst(i));
+                // propogates the type
+                let load_i = self.push_typed(load_op, ty);
                 return Ok(load_i);
             }
             Expr::Int(val) => {
                 // TODO: remove this inderection
                 let i = self.extra.append_u32(val as u32);
-                let ty = TypeRef::IntU64;
-                let const_op = Ref::Const(ty, i);
+                let const_op = Ref::Const(i);
                 let load_op = Op::Load(const_op);
-                let op_i = self.push(load_op);
+                let ty = TypeRef::IntU64;
+                let op_i = self.push_typed(load_op, ty);
                 return Ok(op_i);
             }
             Expr::Bind { name, value } => {
@@ -175,7 +183,7 @@ impl FIRGen {
                 for arg in args_iter {
                     let ty = TypeRef::IntU64;
                     let arg = arg as usize;
-                    self.push_named(Op::FunArg,arg, ty);
+                    self.push_named(Op::FunArg, arg, ty);
                 }
                 let res = self.gen_expr(body)?;
                 self.push(Op::Ret(Ref::Inst(res as u32)));
@@ -203,9 +211,9 @@ impl FIRGen {
         Ok(i)
     }
 
-    fn resolve_ident(&self, name: DIndex) -> Result<Ref> {
+    fn resolve_ident(&self, name: DIndex) -> Result<u32> {
         let i = self.scopes.get(name).context("undefined variable")?;
-        return Ok(Ref::Inst(i));
+        return Ok(i);
     }
 }
 
@@ -213,7 +221,7 @@ impl FIRGen {
 #[derive(Debug, Copy, Clone)]
 pub enum Ref {
     Inst(u32),
-    Const(TypeRef, u32),
+    Const(u32),
 }
 
 #[allow(dead_code)]
@@ -312,7 +320,7 @@ impl<'fir> FIRStringifier<'fir> {
         let this = Self {
             fir,
             str: String::new(),
-            cur_func_i: None
+            cur_func_i: None,
         };
         return this._stringify();
     }
@@ -322,7 +330,8 @@ impl<'fir> FIRStringifier<'fir> {
             match inst {
                 Op::Load(r) => {
                     self.inst_eq(i);
-                    self.op_func_1_ref(inst, r);
+                    let ty = &self.fir.types[i];
+                    self.op_func_2_ty_ref(inst,ty, r);
                 }
                 Op::Add(lhs, rhs) | Op::Sub(lhs, rhs) | Op::Mul(lhs, rhs) => {
                     self.inst_eq(i);
@@ -401,7 +410,10 @@ impl<'fir> FIRStringifier<'fir> {
         self.write(")");
     }
 
-    fn op_func_1<F>(&mut self, op: Op, arg: F) where F: FnOnce(&mut Self) {
+    fn op_func_1<F>(&mut self, op: Op, arg: F)
+    where
+        F: FnOnce(&mut Self),
+    {
         let name = self.get_op_name(op);
         self.func_1(name, arg);
     }
@@ -443,12 +455,21 @@ impl<'fir> FIRStringifier<'fir> {
         let name = self.get_op_name(op);
         self.func_2(name, arg1, arg2);
     }
-    fn op_func_2_ref_ref(&mut self, op: &Op, arg1: &Ref, arg2: &Ref)
-    {
+    fn op_func_2_ref_ref(&mut self, op: &Op, arg1: &Ref, arg2: &Ref) {
         let name = self.get_op_name(*op);
         self.write(name);
         self.write("(");
         self.write_ref(arg1);
+        self.write(", ");
+        self.write_ref(arg2);
+        self.write(")");
+    }
+
+    fn op_func_2_ty_ref(&mut self, op: &Op, arg1: &TypeRef, arg2: &Ref) {
+        let name = self.get_op_name(*op);
+        self.write(name);
+        self.write("(");
+        self.write_type_ref(arg1);
         self.write(", ");
         self.write_ref(arg2);
         self.write(")");
@@ -474,11 +495,12 @@ impl<'fir> FIRStringifier<'fir> {
 
     fn write_ref(&mut self, r: &Ref) {
         match r {
-            Ref::Const(ty, i) => self.func_2(
+            Ref::Const(i) => {
+                self.func_1(
                 "const",
-                |s| s.write_type_ref(ty),
-                |s| s.write(&self.fir.get_const(*i).to_string()),
-            ),
+                    |s| s.write(&self.fir.get_const(*i).to_string()),
+                )
+            }
             Ref::Inst(i) => self.inst_ref(*i),
         }
     }
@@ -487,7 +509,7 @@ impl<'fir> FIRStringifier<'fir> {
         use TypeRef::*;
         let str = match ty {
             IntU64 => "u64",
-            None => "_"
+            None => "_",
         };
         self.write(str);
     }
@@ -590,8 +612,8 @@ mod tests {
         assert_results_in_fir!(
             contents,
             [
-                Load(Ref::Const(TypeRef::IntU64, 0)),
-                Load(Ref::Const(TypeRef::IntU64, 1)),
+                Load(Ref::Const(0)),
+                Load(Ref::Const(1)),
                 Add(Ref::Inst(0), Ref::Inst(1))
             ]
         );
@@ -603,14 +625,14 @@ mod tests {
         assert_results_in_fir!(
             "(fun add (a b) (+ a b))",
             [
-            FunDef {..},
-            FunArg,
-            FunArg,
-            Load(Ref::Inst(0)),
-            Load(Ref::Inst(1)),
-            Add(Ref::Inst(2), Ref::Inst(3)),
-            Ret(Ref::Inst(4)),
-            FunEnd
+                FunDef { .. },
+                FunArg,
+                FunArg,
+                Load(Ref::Inst(0)),
+                Load(Ref::Inst(1)),
+                Add(Ref::Inst(2), Ref::Inst(3)),
+                Ret(Ref::Inst(4)),
+                FunEnd
             ]
         );
     }
@@ -641,8 +663,8 @@ mod tests {
         fn add() {
             assert_fir_str_eq!(
                 "( + 1 2)",
-                "%0 = load(const(u64, 1))",
-                "%1 = load(const(u64, 2))",
+                "%0 = load(u64, const(1))",
+                "%1 = load(u64, const(2))",
                 "%2 = add(%0, %1)"
             );
         }
@@ -651,11 +673,11 @@ mod tests {
         fn chained_algebra() {
             assert_fir_str_eq!(
                 "(+ 0 ( + 1 ( * 2 (- 3 4))))",
-                "%0 = load(const(u64, 0))",
-                "%1 = load(const(u64, 1))",
-                "%2 = load(const(u64, 2))",
-                "%3 = load(const(u64, 3))",
-                "%4 = load(const(u64, 4))",
+                "%0 = load(u64, const(0))",
+                "%1 = load(u64, const(1))",
+                "%2 = load(u64, const(2))",
+                "%3 = load(u64, const(3))",
+                "%4 = load(u64, const(4))",
                 "%5 = sub(%3, %4)",
                 "%6 = mul(%2, %5)",
                 "%7 = add(%1, %6)",
@@ -667,8 +689,8 @@ mod tests {
         fn if_expr() {
             assert_fir_str_eq!(
                 "(if (== 1 2) 3 4)",
-                "%0 = load(const(u64, 1))",
-                "%1 = load(const(u64, 2))",
+                "%0 = load(u64, const(1))",
+                "%1 = load(u64, const(2))",
                 "%2 = cmp_eq(u64, %0, %1)",
                 "br(%2, %3, %4)",
                 "%3 = label()",
@@ -676,7 +698,7 @@ mod tests {
                 "%4 = label()",
                 "jmp(%5)",
                 "%5 = label()",
-                "%6 = load(phi(u64, [%3, const(u64, 3)], [%4, const(u64, 4)]))"
+                "%6 = phi(u64, [%3, const(3)], [%4, const(4)])"
             );
         }
 
@@ -687,8 +709,8 @@ mod tests {
                 "define u64 @add {",
                 "  %0 = arg(u64)",
                 "  %1 = arg(u64)",
-                "  %2 = load(%0)",
-                "  %3 = load(%1)",
+                "  %2 = load(u64, %0)",
+                "  %3 = load(u64, %1)",
                 "  %4 = add(%2, %3)",
                 "  %5 = ret(%4)",
                 "}"
@@ -705,8 +727,8 @@ mod tests {
                 "  %2 = add(%0, %1)",
                 "  %3 = ret(%2)",
                 "}",
-                "%0 = load(const(u64, 1))",
-                "%1 = load(const(u64, 2))",
+                "%0 = load(u64, const(1))",
+                "%1 = load(u64, const(2))",
                 "%2 = call(@add, [%0, %1])"
             );
         }
@@ -716,7 +738,7 @@ mod tests {
             assert_fir_str_eq!(
                 "(let a 1)",
                 "%0 = alloc(u64)",
-                "%1 = load(const(u64, 1))",
+                "%1 = load(u64, const(1))",
                 "store(%0, %1)"
             );
         }
@@ -726,9 +748,9 @@ mod tests {
             assert_fir_str_eq!(
                 "(let a 1) a",
                 "%0 = alloc(u64)",
-                "%1 = load(const(u64, 1))",
+                "%1 = load(u64, const(1))",
                 "store(%0, %1)",
-                "%3 = load(%0)"
+                "%3 = load(u64, %0)"
             );
         }
     }
