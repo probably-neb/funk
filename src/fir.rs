@@ -12,11 +12,10 @@ pub enum Op {
     /// function definition
     FunDef {
         name: DIndex,
-        retty: TypeRef,
     },
     FunEnd,
     /// function arg decl
-    FunArg(TypeRef),
+    FunArg,
     /// function call.
     /// fun is a ref to the FIR FunDef node
     /// args points to a slice of Fir Refs in extra
@@ -28,7 +27,7 @@ pub enum Op {
     /// declare a local variable
     /// NOTE: these should be hoisted to the top of the function body
     /// for eaasier codegen
-    Alloc(TypeRef),
+    Alloc,
     Load(Ref),
     Store(Ref, Ref),
     Add(Ref, Ref),
@@ -48,41 +47,16 @@ pub enum Op {
     Jump(Ref),
 }
 
-impl Op {
-    fn name(&self) -> &'static str {
-        use Op::*;
-        match self {
-            FunDef { .. } => "define",
-            FunEnd => "fun_end",
-            FunArg(_) => "arg",
-            FunCall { .. } => "call",
-            Alloc(_) => "alloc",
-            Load(_) => "load",
-            Store(_, _) => "store",
-            Add(_, _) => "add",
-            Sub(_, _) => "sub",
-            Mul(_, _) => "mul",
-            Div(_, _) => "div",
-            Eq(_, _) => "eq",
-            Lt(_, _) => "lt",
-            LtEq(_, _) => "lteq",
-            Gt(_, _) => "gt",
-            GtEq(_, _) => "gteq",
-            Branch { .. } => "branch",
-            Jump(_) => "jump",
-        }
-    }
-}
-
 pub struct FIR {
     ops: Vec<Op>,
+    types: Vec<TypeRef>,
     extra: Extra,
     data: ast::DataPool,
 }
 
 impl FIR {
-    fn new(ops: Vec<Op>, extra: Extra, data: ast::DataPool) -> Self {
-        return Self { ops, extra, data };
+    fn new(ops: Vec<Op>, extra: Extra, data: ast::DataPool, types: Vec<TypeRef>) -> Self {
+        return Self { ops, extra, data, types };
     }
 
     fn get_const(&self, i: u32) -> u64 {
@@ -96,7 +70,10 @@ pub struct FIRGen {
     cursor: usize,
 
     ops: Vec<Op>,
+    types: Vec<TypeRef>,
     extra: Extra,
+
+    scopes: ScopeStack,
 }
 
 impl FIRGen {
@@ -105,11 +82,13 @@ impl FIRGen {
             ast,
             cursor: 0,
             ops: vec![],
+            types: vec![],
             extra: Extra::new(),
+            scopes: ScopeStack::new(),
         };
         this._generate()?;
 
-        return Ok(FIR::new(this.ops, this.extra, this.ast.data));
+        return Ok(FIR::new(this.ops, this.extra, this.ast.data, this.types));
     }
 
     fn _generate(&mut self) -> Result<()> {
@@ -123,6 +102,27 @@ impl FIRGen {
     fn push(&mut self, op: Op) -> usize {
         let i = self.ops.len();
         self.ops.push(op);
+        self.types.push(TypeRef::None);
+        self.scopes.skip::<1>();
+        debug_assert_eq!(self.ops.len(), self.types.len());
+        return i;
+    }
+
+    fn push_typed(&mut self, op: Op, ty: TypeRef) -> usize {
+        let i = self.ops.len();
+        self.ops.push(op);
+        self.types.push(ty);
+        self.scopes.skip::<1>();
+        debug_assert_eq!(self.ops.len(), self.types.len());
+        return i;
+    }
+
+    fn push_named(&mut self, op: Op, name: DIndex, ty: TypeRef) -> usize {
+        let i = self.ops.len();
+        self.ops.push(op);
+        self.types.push(ty);
+        self.scopes.bind_local(name);
+        debug_assert_eq!(self.ops.len(), self.types.len());
         return i;
     }
 
@@ -138,7 +138,11 @@ impl FIRGen {
         self.mark_visited(i);
         match expr {
             Expr::Binop { op, lhs, rhs } => self.gen_binop(op, lhs, rhs),
-
+            Expr::Ident(name) => {
+                let i = self.resolve_ident(name)?;
+                let load_i = self.push(Op::Load(i));
+                return Ok(load_i);
+            }
             Expr::Int(val) => {
                 // TODO: remove this inderection
                 let i = self.extra.append_u32(val as u32);
@@ -151,13 +155,26 @@ impl FIRGen {
             Expr::Bind { name, value } => {
                 let ty = TypeRef::IntU64;
                 // FIXME: hoist!
-                let alloc_i = self.push(Op::Alloc(ty));
+                let alloc_i = self.push_named(Op::Alloc, name, ty);
                 let value_i = self.gen_expr(value)?;
                 let alloc_ref = Ref::Inst(alloc_i as u32);
                 let value_ref = Ref::Inst(value_i as u32);
                 let store_op = Op::Store(alloc_ref, value_ref);
                 let store_i = self.push(store_op);
                 return Ok(store_i);
+            }
+            Expr::FunDef { name, args, body } => {
+                let fun_def_op = Op::FunDef { name };
+                let ty = TypeRef::IntU64;
+                let fun_def_i = self.push_typed(fun_def_op, ty);
+                let n_args = self.ast.get_num_args(args);
+                for _ in 0..n_args {
+                    let ty = TypeRef::IntU64;
+                    self.push_typed(Op::FunArg, ty);
+                }
+                self.gen_expr(body)?;
+                self.push(Op::FunEnd);
+                return Ok(fun_def_i);
             }
             _ => unimplemented!("unimplemented expr {:?}", expr),
         }
@@ -178,25 +195,108 @@ impl FIRGen {
         let i = self.push(op_inst);
         Ok(i)
     }
+
+    fn resolve_ident(&self, i: DIndex) -> Result<Ref> {
+        let i = self.scopes.get(i).context("undefined variable")?;
+        return Ok(Ref::Inst(i));
+    }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
 pub enum Ref {
     Inst(u32),
     Const(TypeRef, u32),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
 pub enum TypeRef {
+    None,
     IntU64,
 }
 
+struct ScopeStack {
+    stack_map: Vec<DIndex>,
+    starts: Vec<usize>,
+    cur: usize,
+}
+
+impl ScopeStack {
+    const NOT_BOUND: DIndex = usize::MAX;
+
+    fn new() -> Self {
+        Self {
+            stack_map: vec![],
+            starts: vec![0],
+            cur: 0,
+        }
+    }
+
+    fn skip<const N: usize>(&mut self) {
+        let vals = [Self::NOT_BOUND; N];
+        self.stack_map.extend(vals);
+    }
+
+    /// like start_new but does not set `cur`
+    fn start_subscope(&mut self) {
+        self.starts.push(self.stack_map.len());
+    }
+
+    fn end_subscope(&mut self) {
+        let start = self.starts.pop().expect("no starts");
+        self.stack_map.truncate(start);
+    }
+
+    fn start_new(&mut self) {
+        self.starts.push(self.cur);
+        self.cur = self.stack_map.len();
+    }
+
+    fn end(&mut self) {
+        let start = self.cur;
+        self.cur = self.starts.pop().expect("no starts");
+        self.stack_map.truncate(start);
+    }
+
+    /// NOTE: does not check that name is not already in scope,
+    /// therefore allowing shadowing
+    fn bind_local(&mut self, name: DIndex) -> u32 {
+        let i = self.stack_map.len();
+        self.stack_map.push(name);
+        return (i - self.cur) as u32;
+    }
+
+    fn get(&self, name: DIndex) -> Option<u32> {
+        debug_assert_ne!(name, Self::NOT_BOUND);
+        let pos_r = self.stack_map.iter().rev().position(|&n| n == name);
+        let Some(pos_r) = pos_r else {
+            return None;
+        };
+        let pos = self.stack_map.len() - pos_r - 1;
+        if pos < self.cur {
+            unimplemented!("tried to get reference to variable outside of stack frame. globals not implemented");
+        }
+        return Some(pos as u32);
+    }
+
+    fn set(&mut self, i: u32, name: DIndex) {
+        self.stack_map[i as usize] = name;
+    }
+
+    fn is_last(&self, i: u32) -> bool {
+        let i = self.cur + i as usize;
+        let len = self.stack_map.len();
+        return i + 1 == len;
+    }
+}
 struct FIRStringifier<'fir> {
     fir: &'fir FIR,
     str: String,
     in_func: bool,
 }
 
+#[allow(dead_code)]
 impl<'fir> FIRStringifier<'fir> {
     const INDENT: &'static str = "  ";
 
@@ -213,36 +313,39 @@ impl<'fir> FIRStringifier<'fir> {
         for (i, inst) in self.fir.ops.iter().enumerate() {
             match inst {
                 Op::Load(r) => {
-                    self.inst_i_eq(i);
+                    self.inst_eq(i);
                     self.func_1("load", |s| s.write_ref(r));
                 }
                 Op::Add(lhs, rhs) | Op::Sub(lhs, rhs) | Op::Mul(lhs, rhs) => {
-                    let name = inst.name();
-                    self.inst_i_eq(i);
+                    let name = self.get_op_name(*inst);
+                    self.inst_eq(i);
                     self.func_2(name, |s| s.write_ref(lhs), |s| s.write_ref(rhs));
                 }
-                Op::FunDef { name, retty } => {
+                Op::FunDef { name } => {
                     assert!(!self.in_func, "nested functions not supported");
                     self.write("define");
                     self.space();
-                    self.write_type_ref(retty);
+                    let return_ty = &self.fir.types[i];
+                    self.write_type_ref(return_ty);
                     self.space();
                     self.func_ref(*name);
                     self.space();
                     self.write("{");
                     self.in_func = true;
                 }
-                Op::FunArg(ty) => {
+                Op::FunArg => {
                     assert!(self.in_func, "arg decl outside of function");
-                    self.inst_i_eq(i);
+                    self.inst_eq(i);
+                    let ty = &self.fir.types[i];
                     self.func_1("arg", |s| s.write_type_ref(ty));
                 }
                 Op::FunEnd => {
                     self.in_func = false;
                     self.write("}");
                 }
-                Op::Alloc(ty) => {
-                    self.inst_i_eq(i);
+                Op::Alloc => {
+                    self.inst_eq(i);
+                    let ty = &self.fir.types[i];
                     self.func_1("alloc", |s| s.write_type_ref(ty));
                 }
                 Op::Store(dest, src) => {
@@ -295,13 +398,13 @@ impl<'fir> FIRStringifier<'fir> {
         self.write(")");
     }
 
-    fn inst_i(&mut self, i: u32) {
+    fn inst_ref(&mut self, i: u32) {
         self.write("%");
         self.write(i.to_string().as_str());
     }
 
-    fn inst_i_eq(&mut self, i: usize) {
-        self.inst_i(i as u32);
+    fn inst_eq(&mut self, i: usize) {
+        self.inst_ref(i as u32);
         self.write(" = ");
     }
 
@@ -317,7 +420,7 @@ impl<'fir> FIRStringifier<'fir> {
                 |s| s.write_type_ref(ty),
                 |s| s.write(&self.fir.get_const(*i).to_string()),
             ),
-            Ref::Inst(i) => self.inst_i(*i),
+            Ref::Inst(i) => self.inst_ref(*i),
         }
     }
 
@@ -325,12 +428,42 @@ impl<'fir> FIRStringifier<'fir> {
         use TypeRef::*;
         let str = match ty {
             IntU64 => "u64",
+            None => "_"
         };
         self.write(str);
     }
 
     fn write_ident(&mut self, i: DIndex) {
         let str = self.fir.data.get_ref::<str>(i);
+        self.write(str);
+    }
+
+    fn get_op_name(&self, op: Op) -> &'static str {
+        use Op::*;
+        match op {
+            FunDef { .. } => "define",
+            FunEnd => "fun_end",
+            FunArg => "arg",
+            FunCall { .. } => "call",
+            Alloc => "alloc",
+            Load(_) => "load",
+            Store(_, _) => "store",
+            Add(_, _) => "add",
+            Sub(_, _) => "sub",
+            Mul(_, _) => "mul",
+            Div(_, _) => "div",
+            Eq(_, _) => "eq",
+            Lt(_, _) => "lt",
+            LtEq(_, _) => "lteq",
+            Gt(_, _) => "gt",
+            GtEq(_, _) => "gteq",
+            Branch { .. } => "br",
+            Jump(_) => "jmp",
+        }
+    }
+
+    fn op_name(&mut self, op: Op) {
+        let str = self.get_op_name(op);
         self.write(str);
     }
 }
@@ -501,6 +634,17 @@ mod tests {
                 "%0 = alloc(u64)",
                 "%1 = load(const(u64, 1))",
                 "store(%0, %1)"
+            );
+        }
+
+        #[test]
+        fn bind_use() {
+            assert_fir_str_eq!(
+                "(let a 1) a",
+                "%0 = alloc(u64)",
+                "%1 = load(const(u64, 1))",
+                "store(%0, %1)",
+                "%3 = load(%0)"
             );
         }
     }
