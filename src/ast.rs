@@ -229,6 +229,13 @@ impl Extra {
         self.data.push(val);
         return i as u32;
     }
+
+    pub fn concat(&mut self, data: &[ExtraData]) -> usize {
+        let len = data.len() as u32;
+        let i = self.append(len);
+        self.data.extend_from_slice(data);
+        return i;
+    }
 }
 
 impl std::ops::Index<usize> for Extra {
@@ -267,7 +274,7 @@ pub struct ExtraFunArgs<'e> {
 
 impl<'e> FromExtra<'e> for ExtraFunArgs<'e> {
     fn from_extra(extra: &'e Extra, i: usize) -> Self {
-        let len = extra.data[0];
+        let len = extra.data[i];
         let start = i + 1;
         let end = start + len as usize;
         let args = &extra.data[start..end];

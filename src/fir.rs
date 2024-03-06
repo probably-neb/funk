@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 use crate::ast::{self, Ast, DIndex, Extra};
 use crate::parser::Expr;
@@ -191,6 +191,32 @@ impl FIRGen {
                 self.scopes.end();
                 return Ok(fun_def_i);
             }
+            Expr::FunCall { name, args } => {
+                // FIXME: to_owned here because rust cannot determine that
+                // gen_expr does not mutate the contents of args
+                let mut args = self.ast.fun_args_slice(args).to_owned();
+                let mut args_iter = args.iter_mut();
+                // NOTE: could avoid saving len here if fun def is used for
+                // n args later
+                for arg_expr_i in &mut args_iter {
+                    // overwrite index in args
+                    // cannot append to extra here because arg exprs may 
+                    // add data to extra
+                    *arg_expr_i = self.gen_expr(*arg_expr_i as usize)? as u32;
+                }
+                let args_i = self.extra.concat(&args);
+
+                let fun_i = self.resolve_fn(name)?;
+                let fun_ref = Ref::Inst(fun_i);
+
+                let fun_op = Op::FunCall {
+                    fun: fun_ref,
+                    args: args_i,
+                };
+                let ret_ty = self.types[fun_i as usize];
+                let res = self.push_typed(fun_op, ret_ty);
+                return Ok(res);
+            }
             _ => unimplemented!("unimplemented expr {:?}", expr),
         }
     }
@@ -212,8 +238,21 @@ impl FIRGen {
     }
 
     fn resolve_ident(&self, name: DIndex) -> Result<u32> {
+        // FIXME: create map
         let i = self.scopes.get(name).context("undefined variable")?;
         return Ok(i);
+    }
+
+    fn resolve_fn(&self, name: DIndex) -> Result<u32> {
+        for (i, op) in self.ops.iter().enumerate() {
+            let Op::FunDef { name: n } = op else {
+                continue;
+            };
+            if *n == name {
+                return Ok(i as u32);
+            }
+        }
+        return Err(anyhow!("undefined function"));
     }
 }
 
@@ -310,6 +349,7 @@ struct FIRStringifier<'fir> {
     fir: &'fir FIR,
     str: String,
     cur_func_i: Option<usize>,
+    offset: u32,
 }
 
 #[allow(dead_code)]
@@ -321,6 +361,7 @@ impl<'fir> FIRStringifier<'fir> {
             fir,
             str: String::new(),
             cur_func_i: None,
+            offset: 0,
         };
         return this._stringify();
     }
@@ -331,7 +372,7 @@ impl<'fir> FIRStringifier<'fir> {
                 Op::Load(r) => {
                     self.inst_eq(i);
                     let ty = &self.fir.types[i];
-                    self.op_func_2_ty_ref(inst,ty, r);
+                    self.op_func_2_ty_ref(inst, ty, r);
                 }
                 Op::Add(lhs, rhs) | Op::Sub(lhs, rhs) | Op::Mul(lhs, rhs) => {
                     self.inst_eq(i);
@@ -355,6 +396,30 @@ impl<'fir> FIRStringifier<'fir> {
                     let ty = &self.fir.types[i];
                     self.op_func_1_ty(inst, ty);
                 }
+                Op::FunCall { fun, args } => {
+                    let Ref::Inst(fun_i) = fun else {
+                        unreachable!("fun call ref not inst");
+                    };
+                    let Op::FunDef { name } = &self.fir.ops[*fun_i as usize] else {
+                        unreachable!("fun call ref not fun def");
+                    };
+                    self.inst_eq(i);
+                    self.op_name(*inst); // "call"
+                    self.write("(");
+                    let ret_ty = &self.fir.types[i];
+                    self.write_type_ref(ret_ty);
+                    self.write(", ");
+                    self.func_ref(*name);
+                    self.write(", ");
+                    self.write("[");
+                    let ast::ExtraFunArgs { args } = self.fir.extra.get::<ast::ExtraFunArgs>(*args);
+                    for arg in args.iter().take(args.len() - 1) {
+                        self.inst_ref(*arg);
+                        self.write(", ");
+                    }
+                    self.inst_ref(*args.last().unwrap());
+                    self.write("])");
+                }
                 Op::Ret(r) => {
                     self.inst_eq(i);
                     self.op_func_1_ref(inst, r);
@@ -375,7 +440,9 @@ impl<'fir> FIRStringifier<'fir> {
             let next_is_fun_end = matches!(self.fir.ops.get(i + 1), Some(Op::FunEnd));
             if next_is_fun_end {
                 // set here so the newline is not printed with indent before closing brace
-                self.cur_func_i = None;
+                let func_start = self.cur_func_i.take().expect("in function before func end");
+                // NOTE: +3 for the +1 offset of func_start, funEnd, and ???
+                self.offset += (i - func_start + 3) as u32;
             }
             let not_at_last_op = i < self.fir.ops.len();
             if not_at_last_op {
@@ -477,6 +544,7 @@ impl<'fir> FIRStringifier<'fir> {
 
     fn inst_ref(&mut self, i: u32) {
         self.write("%");
+        let i = i - self.offset;
         self.write(i.to_string().as_str());
     }
 
@@ -495,12 +563,7 @@ impl<'fir> FIRStringifier<'fir> {
 
     fn write_ref(&mut self, r: &Ref) {
         match r {
-            Ref::Const(i) => {
-                self.func_1(
-                "const",
-                    |s| s.write(&self.fir.get_const(*i).to_string()),
-                )
-            }
+            Ref::Const(i) => self.func_1("const", |s| s.write(&self.fir.get_const(*i).to_string())),
             Ref::Inst(i) => self.inst_ref(*i),
         }
     }
@@ -593,12 +656,16 @@ mod tests {
         };
     }
 
+    fn gen_fir(contents: &str) -> FIR {
+        let parser = crate::parser::Parser::new(contents);
+        let ast = parser.parse().expect("syntax error");
+        let fir = FIRGen::generate(ast).expect("failed to generate fir");
+        return fir;
+    }
+
     macro_rules! assert_results_in_fir {
         ($contents:expr, [$($ops:pat),*]) => {
-            let contents = $contents;
-            let parser = crate::parser::Parser::new(contents);
-            let ast = parser.parse().expect("syntax error");
-            let fir = FIRGen::generate(ast).expect("failed to generate fir");
+            let fir = gen_fir($contents);
             assert_fir_matches!(fir, [$($ops),*]);
         };
     }
@@ -636,6 +703,30 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn funcall() {
+        use Op::*;
+        let contents = "(fun add (a b) (+ a b)) (add 1 2)";
+        assert_results_in_fir!(
+            contents,
+            [
+                FunDef { .. },
+                FunArg,
+                FunArg,
+                Load(Ref::Inst(0)),
+                Load(Ref::Inst(1)),
+                Add(Ref::Inst(2), Ref::Inst(3)),
+                Ret(Ref::Inst(4)),
+                FunEnd,
+                Load(Ref::Const(0)),
+                Load(Ref::Const(1)),
+                FunCall {
+                    fun: Ref::Inst(0),
+                    args: 2
+                }
+            ]
+        );
+    }
 
     macro_rules! assert_fir_str_eq {
         ($contents:literal, $($lines:literal),*) => {
@@ -649,7 +740,7 @@ mod tests {
             $(
                 #[allow(unused_assignments)]
                 {
-                    assert_eq!(fir_lines.next().unwrap(), $lines);
+                    assert_eq!($lines, fir_lines.next().unwrap());
                     i += 1
                 }
             )*
@@ -724,12 +815,14 @@ mod tests {
                 "define u64 @add {",
                 "  %0 = arg(u64)",
                 "  %1 = arg(u64)",
-                "  %2 = add(%0, %1)",
-                "  %3 = ret(%2)",
+                "  %2 = load(u64, %0)",
+                "  %3 = load(u64, %1)",
+                "  %4 = add(%2, %3)",
+                "  %5 = ret(%4)",
                 "}",
                 "%0 = load(u64, const(1))",
                 "%1 = load(u64, const(2))",
-                "%2 = call(@add, [%0, %1])"
+                "%2 = call(u64, @add, [%0, %1])"
             );
         }
 
