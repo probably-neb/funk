@@ -178,7 +178,7 @@ mod test {
 
     #[test]
     fn eq() {
-        let stack = run_src("(if (= 1 2) 3 4)");
+        let stack = run_src("(if (== 1 2) 3 4)");
         assert_eq!(stack, vec![4]);
     }
 

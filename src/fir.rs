@@ -45,6 +45,10 @@ pub enum Op {
         t: Ref,
         f: Ref,
     },
+    Phi {
+        a: (Ref, Ref),
+        b: (Ref, Ref)
+    },
     Jump(Ref),
 }
 
@@ -143,7 +147,26 @@ impl FIRGen {
         let expr = self.ast.exprs[i];
         self.mark_visited(i);
         match expr {
-            Expr::Binop { op, lhs, rhs } => self.gen_binop(op, lhs, rhs),
+            Expr::Binop { op, lhs, rhs } => {
+                let lhs_i = self.gen_expr(lhs)?;
+                let lhs = Ref::Inst(lhs_i as u32);
+
+                let rhs_i = self.gen_expr(rhs)?;
+                let rhs = Ref::Inst(rhs_i as u32);
+
+                use crate::parser::Binop::*;
+                let op_inst = match op {
+                    Add => Op::Add(lhs, rhs),
+                    Sub => Op::Sub(lhs, rhs),
+                    Mul => Op::Mul(lhs, rhs),
+                    Eq => Op::Eq(lhs, rhs),
+                    _ => unimplemented!("unimplemented binop {:?}", op),
+                };
+                let op_ty = self.join_types(lhs_i, rhs_i);
+
+                let i = self.push_typed(op_inst, op_ty);
+                Ok(i)
+            },
             Expr::Ident(name) => {
                 let i = self.resolve_ident(name)?;
                 let ty = self.types[i as usize];
@@ -192,18 +215,18 @@ impl FIRGen {
                 return Ok(fun_def_i);
             }
             Expr::FunCall { name, args } => {
-                // FIXME: to_owned here because rust cannot determine that
+                // NOTE: to_owned here because rust cannot determine that
                 // gen_expr does not mutate the contents of args
                 let mut args = self.ast.fun_args_slice(args).to_owned();
                 let mut args_iter = args.iter_mut();
-                // NOTE: could avoid saving len here if fun def is used for
-                // n args later
                 for arg_expr_i in &mut args_iter {
                     // overwrite index in args
                     // cannot append to extra here because arg exprs may 
                     // add data to extra
                     *arg_expr_i = self.gen_expr(*arg_expr_i as usize)? as u32;
                 }
+                // NOTE: concat stores len, but len could be fetched on demand
+                // from fundef instead of stored again
                 let args_i = self.extra.concat(&args);
 
                 let fun_i = self.resolve_fn(name)?;
@@ -217,33 +240,50 @@ impl FIRGen {
                 let res = self.push_typed(fun_op, ret_ty);
                 return Ok(res);
             }
+            Expr::If { cond, branch_true, branch_false } => {
+                let cond_i = self.gen_expr(cond)?;
+                let cond_ref = Ref::Inst(cond_i as u32);
+                let br_i = self.reserve();
+
+                let true_i = self.next_i();
+                let true_res_i = self.gen_expr(branch_true)?;
+                let true_end_i = self.reserve();
+                let true_ref = Ref::Inst(true_i as u32);
+                let true_res_ref = Ref::Inst(true_res_i as u32);
+
+                let false_i = self.next_i();
+                let false_res_i = self.gen_expr(branch_false)?;
+                let false_end_i = self.reserve();
+                let false_ref = Ref::Inst(false_i as u32);
+                let false_res_ref = Ref::Inst(false_res_i as u32);
+
+                let branch_op = Op::Branch { cond: cond_ref, t: true_ref, f: false_ref};
+                self.set(br_i, branch_op);
+
+                let res_op = Op::Phi {
+                    a: (true_ref, true_res_ref),
+                    b: (false_ref, false_res_ref),
+                };
+                let res_ty = self.join_types(true_res_i, false_res_i);
+                let res_i = self.push_typed(res_op, res_ty);
+
+                let jmp_res_op = Op::Jump(Ref::Inst(res_i as u32));
+                self.set(true_end_i, jmp_res_op);
+                self.set(false_end_i, jmp_res_op);
+
+                return Ok(res_i);
+            }
             _ => unimplemented!("unimplemented expr {:?}", expr),
         }
     }
 
-    fn gen_binop(&mut self, op: crate::parser::Binop, lhs: usize, rhs: usize) -> Result<usize> {
-        let lhs = Ref::Inst(self.gen_expr(lhs)? as u32);
-        let rhs = Ref::Inst(self.gen_expr(rhs)? as u32);
-
-        use crate::parser::Binop::*;
-
-        let op_inst = match op {
-            Add => Op::Add(lhs, rhs),
-            Sub => Op::Sub(lhs, rhs),
-            Mul => Op::Mul(lhs, rhs),
-            _ => unimplemented!("unimplemented binop {:?}", op),
-        };
-        let i = self.push(op_inst);
-        Ok(i)
-    }
-
     fn resolve_ident(&self, name: DIndex) -> Result<u32> {
-        // FIXME: create map
         let i = self.scopes.get(name).context("undefined variable")?;
         return Ok(i);
     }
 
     fn resolve_fn(&self, name: DIndex) -> Result<u32> {
+        // FIXME: create map
         for (i, op) in self.ops.iter().enumerate() {
             let Op::FunDef { name: n } = op else {
                 continue;
@@ -253,6 +293,34 @@ impl FIRGen {
             }
         }
         return Err(anyhow!("undefined function"));
+    }
+
+    fn reserve(&mut self) -> usize {
+        return self.push(Op::Alloc);
+    }
+
+    fn set(&mut self, i: usize, op: Op) {
+        self.ops[i] = op;
+    }
+
+    fn next_i(&self) -> usize {
+        return self.ops.len();
+    }
+
+    fn join_types(&self, a: usize, b: usize) -> TypeRef {
+        let a = self.types[a];
+        let b = self.types[b];
+        if a == b {
+            return a;
+        }
+        let none = TypeRef::None;
+        if a == none {
+            return b;
+        }
+        if b == none {
+            return a;
+        }
+        unimplemented!("unimplemented type mismatch");
     }
 }
 
@@ -264,7 +332,7 @@ pub enum Ref {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum TypeRef {
     None,
     IntU64,
@@ -405,20 +473,21 @@ impl<'fir> FIRStringifier<'fir> {
                     };
                     self.inst_eq(i);
                     self.op_name(*inst); // "call"
-                    self.write("(");
+                    self.paren_start();
                     let ret_ty = &self.fir.types[i];
                     self.write_type_ref(ret_ty);
-                    self.write(", ");
+                    self.sep();
                     self.func_ref(*name);
-                    self.write(", ");
-                    self.write("[");
+                    self.sep();
+                    self.brack_start();
                     let ast::ExtraFunArgs { args } = self.fir.extra.get::<ast::ExtraFunArgs>(*args);
                     for arg in args.iter().take(args.len() - 1) {
                         self.inst_ref(*arg);
-                        self.write(", ");
+                        self.sep();
                     }
                     self.inst_ref(*args.last().unwrap());
-                    self.write("])");
+                    self.brack_end();
+                    self.paren_end();
                 }
                 Op::Ret(r) => {
                     self.inst_eq(i);
@@ -434,6 +503,43 @@ impl<'fir> FIRStringifier<'fir> {
                 }
                 Op::Store(dest, src) => {
                     self.op_func_2_ref_ref(inst, dest, src);
+                }
+                Op::Eq(lhs, rhs) => {
+                    self.inst_eq(i);
+                    let ty = &self.fir.types[i];
+                    self.op_func_3_ty_ref_ref(inst,ty, lhs, rhs);
+                }
+                Op::Branch { cond, t, f } => {
+                    self.op_func_3_ref_ref_ref(inst, cond, t, f);
+                }
+                Op::Jump(dest) => {
+                    self.op_func_1_ref(inst, dest);
+                }
+                Op::Phi { a: (a_from, a_res), b: (b_from, b_res)} => {
+                    self.inst_eq(i);
+                    self.op_name(*inst);
+                    self.paren_start();
+
+                    self.write_type_ref_at(i);
+
+                    self.sep();
+
+                    self.brack_start();
+                    self.write_ref(a_from);
+                    self.sep();
+                    self.write_ref(a_res);
+                    self.brack_end();
+
+                    self.sep();
+
+                    self.brack_start();
+                    self.write_ref(b_from);
+                    self.sep();
+                    self.write_ref(b_res);
+                    self.brack_end();
+
+                    self.paren_end();
+
                 }
                 _ => unimplemented!("FIR op {:?} not implemented", inst),
             };
@@ -472,9 +578,9 @@ impl<'fir> FIRStringifier<'fir> {
         F: FnOnce(&mut Self),
     {
         self.write(name);
-        self.write("(");
+        self.paren_start();
         arg(self);
-        self.write(")");
+        self.paren_end();
     }
 
     fn op_func_1<F>(&mut self, op: Op, arg: F)
@@ -488,17 +594,17 @@ impl<'fir> FIRStringifier<'fir> {
     fn op_func_1_ref(&mut self, op: &Op, arg: &Ref) {
         let name = self.get_op_name(*op);
         self.write(name);
-        self.write("(");
+        self.paren_start();
         self.write_ref(arg);
-        self.write(")");
+        self.paren_end();
     }
 
     fn op_func_1_ty(&mut self, op: &Op, arg: &TypeRef) {
         let name = self.get_op_name(*op);
         self.write(name);
-        self.write("(");
+        self.paren_start();
         self.write_type_ref(arg);
-        self.write(")");
+        self.paren_end();
     }
 
     fn func_2<F1, F2>(&mut self, name: &str, arg1: F1, arg2: F2)
@@ -507,11 +613,11 @@ impl<'fir> FIRStringifier<'fir> {
         F2: FnOnce(&mut Self),
     {
         self.write(name);
-        self.write("(");
+        self.paren_start();
         arg1(self);
-        self.write(", ");
+        self.sep();
         arg2(self);
-        self.write(")");
+        self.paren_end();
     }
 
     fn op_func_2<F1, F2>(&mut self, op: Op, arg1: F1, arg2: F2)
@@ -525,21 +631,43 @@ impl<'fir> FIRStringifier<'fir> {
     fn op_func_2_ref_ref(&mut self, op: &Op, arg1: &Ref, arg2: &Ref) {
         let name = self.get_op_name(*op);
         self.write(name);
-        self.write("(");
+        self.paren_start();
         self.write_ref(arg1);
-        self.write(", ");
+        self.sep();
         self.write_ref(arg2);
-        self.write(")");
+        self.paren_end();
     }
 
     fn op_func_2_ty_ref(&mut self, op: &Op, arg1: &TypeRef, arg2: &Ref) {
         let name = self.get_op_name(*op);
         self.write(name);
-        self.write("(");
+        self.paren_start();
         self.write_type_ref(arg1);
-        self.write(", ");
+        self.sep();
         self.write_ref(arg2);
-        self.write(")");
+        self.paren_end();
+    }
+
+    fn op_func_3_ty_ref_ref(&mut self, op: &Op, ty: &TypeRef, a: &Ref, b: &Ref) {
+        self.op_name(*op);
+        self.paren_start();
+        self.write_type_ref(ty);
+        self.sep();
+        self.write_ref(a);
+        self.sep();
+        self.write_ref(b);
+        self.paren_end();
+    }
+
+    fn op_func_3_ref_ref_ref(&mut self, op: &Op, a: &Ref, b: &Ref, c: &Ref) {
+        self.op_name(*op);
+        self.paren_start();
+        self.write_ref(a);
+        self.sep();
+        self.write_ref(b);
+        self.sep();
+        self.write_ref(c);
+        self.paren_end();
     }
 
     fn inst_ref(&mut self, i: u32) {
@@ -577,6 +705,11 @@ impl<'fir> FIRStringifier<'fir> {
         self.write(str);
     }
 
+    fn write_type_ref_at(&mut self, i: usize) {
+        let ty = &self.fir.types[i];
+        self.write_type_ref(ty);
+    }
+
     fn write_ident(&mut self, i: DIndex) {
         let str = self.fir.data.get_ref::<str>(i);
         self.write(str);
@@ -597,13 +730,14 @@ impl<'fir> FIRStringifier<'fir> {
             Sub(_, _) => "sub",
             Mul(_, _) => "mul",
             Div(_, _) => "div",
-            Eq(_, _) => "eq",
-            Lt(_, _) => "lt",
-            LtEq(_, _) => "lteq",
-            Gt(_, _) => "gt",
-            GtEq(_, _) => "gteq",
+            Eq(_, _) => "cmp_eq",
+            Lt(_, _) => "cmp_lt",
+            LtEq(_, _) => "cmp_lteq",
+            Gt(_, _) => "cmp_gt",
+            GtEq(_, _) => "cmp_gteq",
             Branch { .. } => "br",
             Jump(_) => "jmp",
+            Phi {..} => "phi",
         }
     }
 
@@ -615,6 +749,27 @@ impl<'fir> FIRStringifier<'fir> {
     fn in_func(&self) -> bool {
         return self.cur_func_i.is_some();
     }
+
+    fn brack_start(&mut self) {
+        self.write("[");
+    }
+
+    fn brack_end(&mut self) {
+        self.write("]");
+    }
+
+    fn paren_start(&mut self) {
+        self.write("(");
+    }
+
+    fn paren_end(&mut self) {
+        self.write(")");
+    }
+
+    fn sep(&mut self) {
+        self.write(", ");
+    }
+
 }
 
 #[cfg(test)]
@@ -783,13 +938,12 @@ mod tests {
                 "%0 = load(u64, const(1))",
                 "%1 = load(u64, const(2))",
                 "%2 = cmp_eq(u64, %0, %1)",
-                "br(%2, %3, %4)",
-                "%3 = label()",
-                "jmp(%5)",
-                "%4 = label()",
-                "jmp(%5)",
-                "%5 = label()",
-                "%6 = phi(u64, [%3, const(3)], [%4, const(4)])"
+                "br(%2, %4, %6)",
+                "%4 = load(u64, const(3))",
+                "jmp(%8)",
+                "%6 = load(u64, const(4))",
+                "jmp(%8)",
+                "%8 = phi(u64, [%4, %4], [%6, %6])"
             );
         }
 

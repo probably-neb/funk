@@ -197,6 +197,7 @@ impl<'a> Parser<'a> {
             Token::Fun => return Some(self.fun_expr()),
             Token::Let => return Some(self.bind_expr()),
             Token::Eq
+            | Token::DblEq
             | Token::Mul
             | Token::Plus
             | Token::Minus
@@ -389,7 +390,7 @@ pub enum Binop {
 impl From<Token> for Binop {
     fn from(value: Token) -> Self {
         match value {
-            Token::Eq => Binop::Eq,
+            Token::DblEq => Binop::Eq,
             Token::Mul => Binop::Mul,
             Token::Plus => Binop::Add,
             Token::Minus => Binop::Sub,
@@ -623,7 +624,7 @@ pub mod tests {
 
     #[test]
     fn eq_expr() {
-        let contents = "(= 10 10)";
+        let contents = "(== 10 10)";
         let parser = parse(contents).expect("parser error");
         assert_eq!(parser.tokens.len(), 5);
         assert_eq!(
@@ -638,7 +639,7 @@ pub mod tests {
 
     #[test]
     fn eq_with_sub_expr() {
-        let contents = "(= (* 2 2) 4)";
+        let contents = "(== (* 2 2) 4)";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(
             parser.exprs[0],
@@ -675,7 +676,7 @@ pub mod tests {
 
     #[test]
     fn if_expr() {
-        let contents = r#"(if (= 4 4) "yes" "no")"#;
+        let contents = r#"(if (== 4 4) "yes" "no")"#;
         let parser = parse(contents).expect("parser error");
 
         let_assert_matches!(
