@@ -439,6 +439,20 @@ mod tests {
     }
 
     #[test]
+    fn nested_add_lhs() {
+        assert_compiles_to!(
+            "( + ( + 1 2 ) 3 )",
+            [
+                Push(1),
+                Push(2),
+                Add,
+                Push(3),
+                Add
+            ]
+        );
+    }
+
+    #[test]
     fn repeated_add() {
         let contents = "(+ 1 2) (+ 3 4)";
         let compiler = compile(contents);

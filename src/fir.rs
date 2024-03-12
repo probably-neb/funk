@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Context, Result};
 
-use crate::ast::{self, Ast, DIndex, Extra};
+pub use crate::ast::DIndex;
+use crate::ast::{self, Ast, Extra};
 use crate::parser::Expr;
 
 /// An index into the `extra` field of `FIR`
-type XIndex = usize;
+pub type XIndex = usize;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 pub enum Op {
+    /* Fucntions */
     /// function definition
     FunDef {
         name: DIndex,
@@ -20,17 +22,23 @@ pub enum Op {
     /// fun is a ref to the FIR FunDef node
     /// args points to a slice of Fir Refs in extra
     FunCall {
-        fun: Ref,
-        // expen
+        /// a ref to the FunDef op
+        fun: u32,
+        /// a pointer to a slice of Refs in extra
         args: XIndex,
     },
     Ret(Ref),
+
+    /* Memory */
     /// declare a local variable
     /// NOTE: these should be hoisted to the top of the function body
     /// for eaasier codegen
     Alloc,
     Load(Ref),
+    /// (dest, src)
     Store(Ref, Ref),
+
+    /* Binops */
     Add(Ref, Ref),
     Sub(Ref, Ref),
     Mul(Ref, Ref),
@@ -40,6 +48,9 @@ pub enum Op {
     LtEq(Ref, Ref),
     Gt(Ref, Ref),
     GtEq(Ref, Ref),
+
+    /* Control flow */
+    Label,
     Branch {
         cond: Ref,
         t: Ref,
@@ -47,16 +58,25 @@ pub enum Op {
     },
     Phi {
         a: (Ref, Ref),
-        b: (Ref, Ref)
+        b: (Ref, Ref),
     },
     Jump(Ref),
 }
 
+impl Op {
+    pub fn is_ctrl_flow(&self) -> bool {
+        match self {
+            Op::Branch { .. } | Op::Jump(_) | Op::Ret(_) => true,
+            _ => false
+        }
+    }
+}
+
 pub struct FIR {
-    ops: Vec<Op>,
-    types: Vec<TypeRef>,
-    extra: Extra,
-    data: ast::DataPool,
+    pub ops: Vec<Op>,
+    pub types: Vec<TypeRef>,
+    pub extra: Extra,
+    pub data: ast::DataPool,
 }
 
 impl FIR {
@@ -69,9 +89,14 @@ impl FIR {
         };
     }
 
-    fn get_const(&self, i: u32) -> u64 {
+    // TODO: take type as param
+    pub fn get_const(&self, i: u32) -> u64 {
         let di = self.extra[i as usize];
         return self.data.get::<u64>(di as usize);
+    }
+
+    pub fn stringify(&self) -> String {
+        return FIRStringifier::stringify(self);
     }
 }
 
@@ -159,14 +184,17 @@ impl FIRGen {
                     Add => Op::Add(lhs, rhs),
                     Sub => Op::Sub(lhs, rhs),
                     Mul => Op::Mul(lhs, rhs),
+                    Div => Op::Div(lhs, rhs),
                     Eq => Op::Eq(lhs, rhs),
+                    Lt => Op::Lt(lhs, rhs),
+                    Gt => Op::Gt(lhs, rhs),
                     _ => unimplemented!("unimplemented binop {:?}", op),
                 };
                 let op_ty = self.join_types(lhs_i, rhs_i);
 
                 let i = self.push_typed(op_inst, op_ty);
                 Ok(i)
-            },
+            }
             Expr::Ident(name) => {
                 let i = self.resolve_ident(name)?;
                 let ty = self.types[i as usize];
@@ -221,7 +249,7 @@ impl FIRGen {
                 let mut args_iter = args.iter_mut();
                 for arg_expr_i in &mut args_iter {
                     // overwrite index in args
-                    // cannot append to extra here because arg exprs may 
+                    // cannot append to extra here because arg exprs may
                     // add data to extra
                     *arg_expr_i = self.gen_expr(*arg_expr_i as usize)? as u32;
                 }
@@ -230,35 +258,47 @@ impl FIRGen {
                 let args_i = self.extra.concat(&args);
 
                 let fun_i = self.resolve_fn(name)?;
-                let fun_ref = Ref::Inst(fun_i);
 
                 let fun_op = Op::FunCall {
-                    fun: fun_ref,
+                    fun: fun_i,
                     args: args_i,
                 };
                 let ret_ty = self.types[fun_i as usize];
                 let res = self.push_typed(fun_op, ret_ty);
                 return Ok(res);
             }
-            Expr::If { cond, branch_true, branch_false } => {
+            Expr::If {
+                cond,
+                branch_true,
+                branch_false,
+            } => {
                 let cond_i = self.gen_expr(cond)?;
                 let cond_ref = Ref::Inst(cond_i as u32);
                 let br_i = self.reserve();
 
-                let true_i = self.next_i();
+                let true_i = self.begin_basic_block();
                 let true_res_i = self.gen_expr(branch_true)?;
                 let true_end_i = self.reserve();
                 let true_ref = Ref::Inst(true_i as u32);
                 let true_res_ref = Ref::Inst(true_res_i as u32);
 
-                let false_i = self.next_i();
+                let false_i = self.begin_basic_block();
                 let false_res_i = self.gen_expr(branch_false)?;
                 let false_end_i = self.reserve();
                 let false_ref = Ref::Inst(false_i as u32);
                 let false_res_ref = Ref::Inst(false_res_i as u32);
 
-                let branch_op = Op::Branch { cond: cond_ref, t: true_ref, f: false_ref};
+                let branch_op = Op::Branch {
+                    cond: cond_ref,
+                    t: true_ref,
+                    f: false_ref,
+                };
                 self.set(br_i, branch_op);
+
+                let end_i = self.begin_basic_block();
+                let jmp_end_op = Op::Jump(Ref::Inst(end_i as u32));
+                self.set(true_end_i, jmp_end_op);
+                self.set(false_end_i, jmp_end_op);
 
                 let res_op = Op::Phi {
                     a: (true_ref, true_res_ref),
@@ -267,14 +307,14 @@ impl FIRGen {
                 let res_ty = self.join_types(true_res_i, false_res_i);
                 let res_i = self.push_typed(res_op, res_ty);
 
-                let jmp_res_op = Op::Jump(Ref::Inst(res_i as u32));
-                self.set(true_end_i, jmp_res_op);
-                self.set(false_end_i, jmp_res_op);
-
                 return Ok(res_i);
             }
             _ => unimplemented!("unimplemented expr {:?}", expr),
         }
+    }
+
+    fn begin_basic_block(&mut self) -> usize {
+        return self.push(Op::Label);
     }
 
     fn resolve_ident(&self, name: DIndex) -> Result<u32> {
@@ -442,9 +482,18 @@ impl<'fir> FIRStringifier<'fir> {
                     let ty = &self.fir.types[i];
                     self.op_func_2_ty_ref(inst, ty, r);
                 }
-                Op::Add(lhs, rhs) | Op::Sub(lhs, rhs) | Op::Mul(lhs, rhs) => {
+                Op::Add(lhs, rhs)
+                | Op::Sub(lhs, rhs)
+                | Op::Mul(lhs, rhs)
+                | Op::Div(lhs, rhs)
+                | Op::Gt(lhs, rhs)
+                | Op::GtEq(lhs, rhs)
+                | Op::Lt(lhs, rhs)
+                | Op::LtEq(lhs, rhs)
+                | Op::Eq(lhs, rhs) => {
                     self.inst_eq(i);
-                    self.op_func_2_ref_ref(inst, lhs, rhs);
+                    let ty = &self.fir.types[i];
+                    self.op_func_3_ty_ref_ref(inst, ty, lhs, rhs);
                 }
                 Op::FunDef { name } => {
                     assert!(!self.in_func(), "nested functions not supported");
@@ -464,10 +513,7 @@ impl<'fir> FIRStringifier<'fir> {
                     let ty = &self.fir.types[i];
                     self.op_func_1_ty(inst, ty);
                 }
-                Op::FunCall { fun, args } => {
-                    let Ref::Inst(fun_i) = fun else {
-                        unreachable!("fun call ref not inst");
-                    };
+                Op::FunCall { fun: fun_i, args } => {
                     let Op::FunDef { name } = &self.fir.ops[*fun_i as usize] else {
                         unreachable!("fun call ref not fun def");
                     };
@@ -504,18 +550,16 @@ impl<'fir> FIRStringifier<'fir> {
                 Op::Store(dest, src) => {
                     self.op_func_2_ref_ref(inst, dest, src);
                 }
-                Op::Eq(lhs, rhs) => {
-                    self.inst_eq(i);
-                    let ty = &self.fir.types[i];
-                    self.op_func_3_ty_ref_ref(inst,ty, lhs, rhs);
-                }
                 Op::Branch { cond, t, f } => {
                     self.op_func_3_ref_ref_ref(inst, cond, t, f);
                 }
                 Op::Jump(dest) => {
                     self.op_func_1_ref(inst, dest);
                 }
-                Op::Phi { a: (a_from, a_res), b: (b_from, b_res)} => {
+                Op::Phi {
+                    a: (a_from, a_res),
+                    b: (b_from, b_res),
+                } => {
                     self.inst_eq(i);
                     self.op_name(*inst);
                     self.paren_start();
@@ -526,7 +570,7 @@ impl<'fir> FIRStringifier<'fir> {
 
                     self.brack_start();
                     self.write_ref(a_from);
-                    self.sep();
+                    self.write(" -> ");
                     self.write_ref(a_res);
                     self.brack_end();
 
@@ -534,12 +578,17 @@ impl<'fir> FIRStringifier<'fir> {
 
                     self.brack_start();
                     self.write_ref(b_from);
-                    self.sep();
+                    self.write(" -> ");
                     self.write_ref(b_res);
                     self.brack_end();
 
                     self.paren_end();
-
+                }
+                Op::Label => {
+                    self.inst_eq(i);
+                    self.op_name(*inst);
+                    self.paren_start();
+                    self.paren_end();
                 }
                 _ => unimplemented!("FIR op {:?} not implemented", inst),
             };
@@ -737,7 +786,8 @@ impl<'fir> FIRStringifier<'fir> {
             GtEq(_, _) => "cmp_gteq",
             Branch { .. } => "br",
             Jump(_) => "jmp",
-            Phi {..} => "phi",
+            Phi { .. } => "phi",
+            Label => "label",
         }
     }
 
@@ -769,7 +819,6 @@ impl<'fir> FIRStringifier<'fir> {
     fn sep(&mut self) {
         self.write(", ");
     }
-
 }
 
 #[cfg(test)]
@@ -876,7 +925,7 @@ mod tests {
                 Load(Ref::Const(0)),
                 Load(Ref::Const(1)),
                 FunCall {
-                    fun: Ref::Inst(0),
+                    fun: 0,
                     args: 2
                 }
             ]
@@ -911,7 +960,7 @@ mod tests {
                 "( + 1 2)",
                 "%0 = load(u64, const(1))",
                 "%1 = load(u64, const(2))",
-                "%2 = add(%0, %1)"
+                "%2 = add(u64, %0, %1)"
             );
         }
 
@@ -924,10 +973,10 @@ mod tests {
                 "%2 = load(u64, const(2))",
                 "%3 = load(u64, const(3))",
                 "%4 = load(u64, const(4))",
-                "%5 = sub(%3, %4)",
-                "%6 = mul(%2, %5)",
-                "%7 = add(%1, %6)",
-                "%8 = add(%0, %7)"
+                "%5 = sub(u64, %3, %4)",
+                "%6 = mul(u64, %2, %5)",
+                "%7 = add(u64, %1, %6)",
+                "%8 = add(u64, %0, %7)"
             );
         }
 
@@ -938,12 +987,15 @@ mod tests {
                 "%0 = load(u64, const(1))",
                 "%1 = load(u64, const(2))",
                 "%2 = cmp_eq(u64, %0, %1)",
-                "br(%2, %4, %6)",
-                "%4 = load(u64, const(3))",
-                "jmp(%8)",
-                "%6 = load(u64, const(4))",
-                "jmp(%8)",
-                "%8 = phi(u64, [%4, %4], [%6, %6])"
+                "br(%2, %4, %7)",
+                "%4 = label()",
+                "%5 = load(u64, const(3))",
+                "jmp(%10)",
+                "%7 = label()",
+                "%8 = load(u64, const(4))",
+                "jmp(%10)",
+                "%10 = label()",
+                "%11 = phi(u64, [%4 -> %5], [%7 -> %8])"
             );
         }
 
@@ -956,7 +1008,7 @@ mod tests {
                 "  %1 = arg(u64)",
                 "  %2 = load(u64, %0)",
                 "  %3 = load(u64, %1)",
-                "  %4 = add(%2, %3)",
+                "  %4 = add(u64, %2, %3)",
                 "  %5 = ret(%4)",
                 "}"
             );
@@ -971,7 +1023,7 @@ mod tests {
                 "  %1 = arg(u64)",
                 "  %2 = load(u64, %0)",
                 "  %3 = load(u64, %1)",
-                "  %4 = add(%2, %3)",
+                "  %4 = add(u64, %2, %3)",
                 "  %5 = ret(%4)",
                 "}",
                 "%0 = load(u64, const(1))",
