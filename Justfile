@@ -1,8 +1,8 @@
 watch *ARGS:
-    ls --color=never ./src/**.rs | entr -rc cargo test --tests {{ARGS}}
+    ls --color=never ./src/**.rs ./src/**/*.rs | entr -rc cargo test --tests {{ARGS}}
 
 watch-trace *ARGS:
-    ls --color=never ./src/**.rs | RUST_BACKTRACE=1 entr -rc cargo test --tests {{ARGS}}
+    ls --color=never ./src/**.rs ./src/**/*.rs | RUST_BACKTRACE=1 entr -rc cargo test --tests {{ARGS}}
 
 cg-annotate *ARGS:
     #!/usr/bin/bash
@@ -29,3 +29,8 @@ cg *ARGS:
 dhat *ARGS:
     cargo build
     valgrind --tool=dhat target/debug/funk {{ARGS}};
+
+clean:
+    #!/usr/bin/bash
+    rm -f cachegrind.out*
+    rm -f dhat.out*
