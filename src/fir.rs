@@ -4,7 +4,7 @@ pub mod stringify;
 pub use crate::ast::DIndex;
 use crate::ast::{self, Ast, Extra};
 use crate::parser::Expr;
-use stringify::FIRStringifier;
+use stringify::stringify;
 
 /// An index into the `extra` field of `FIR`
 pub type XIndex = usize;
@@ -98,7 +98,7 @@ impl FIR {
     }
 
     pub fn stringify(&self) -> String {
-        return FIRStringifier::stringify(self);
+        return crate::fir::stringify::stringify(self);
     }
 }
 
@@ -566,5 +566,4 @@ mod tests {
             ]
         );
     }
-
 }

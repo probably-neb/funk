@@ -1,369 +1,315 @@
 use crate::fir::*;
 
-pub struct FIRStringifier<'fir> {
-    fir: &'fir FIR,
-    str: String,
-    cur_func_i: Option<usize>,
-    offset: u32,
+struct FirStr(String);
+
+impl FirStr {
+    fn write(&mut self, str: &str) {
+        self.0.push_str(str);
+    }
 }
 
-#[allow(dead_code)]
-impl<'fir> FIRStringifier<'fir> {
-    const INDENT: &'static str = "  ";
+const INDENT: &'static str = "  ";
 
-    pub fn stringify(fir: &'fir FIR) -> String {
-        let this = Self {
-            fir,
-            str: String::new(),
-            cur_func_i: None,
-            offset: 0,
-        };
-        return this._stringify();
-    }
+pub fn stringify(fir: &FIR) -> String {
+    let mut _fs = FirStr(String::new());
+    let fs = &mut _fs;
 
-    fn _stringify(mut self) -> String {
-        for (i, inst) in self.fir.ops.iter().enumerate() {
-            match inst {
-                Op::Load(r) => {
-                    self.inst_eq(i);
-                    let ty = &self.fir.types[i];
-                    self.op_func_2_ty_ref(inst, ty, r);
-                }
-                Op::Add(lhs, rhs)
-                | Op::Sub(lhs, rhs)
-                | Op::Mul(lhs, rhs)
-                | Op::Div(lhs, rhs)
-                | Op::Gt(lhs, rhs)
-                | Op::GtEq(lhs, rhs)
-                | Op::Lt(lhs, rhs)
-                | Op::LtEq(lhs, rhs)
-                | Op::Eq(lhs, rhs) => {
-                    self.inst_eq(i);
-                    let ty = &self.fir.types[i];
-                    self.op_func_3_ty_ref_ref(inst, ty, lhs, rhs);
-                }
-                Op::FunDef { name } => {
-                    assert!(!self.in_func(), "nested functions not supported");
-                    self.write("define");
-                    self.space();
-                    let return_ty = &self.fir.types[i];
-                    self.write_type_ref(return_ty);
-                    self.space();
-                    self.func_ref(*name);
-                    self.space();
-                    self.write("{");
-                    self.cur_func_i = Some(i + 1);
-                }
-                Op::FunArg => {
-                    assert!(self.in_func(), "arg decl outside of function");
-                    self.inst_eq(i);
-                    let ty = &self.fir.types[i];
-                    self.op_func_1_ty(inst, ty);
-                }
-                Op::FunCall { fun: fun_i, args } => {
-                    let Op::FunDef { name } = &self.fir.ops[*fun_i as usize] else {
-                        unreachable!("fun call ref not fun def");
-                    };
-                    self.inst_eq(i);
-                    self.op_name(*inst); // "call"
-                    self.paren_start();
-                    let ret_ty = &self.fir.types[i];
-                    self.write_type_ref(ret_ty);
-                    self.sep();
-                    self.func_ref(*name);
-                    self.sep();
-                    self.brack_start();
-                    let ast::ExtraFunArgs { args } = self.fir.extra.get::<ast::ExtraFunArgs>(*args);
-                    for arg in args.iter().take(args.len() - 1) {
-                        self.inst_ref(*arg);
-                        self.sep();
-                    }
-                    self.inst_ref(*args.last().unwrap());
-                    self.brack_end();
-                    self.paren_end();
-                }
-                Op::Ret(r) => {
-                    self.inst_eq(i);
-                    self.op_func_1_ref(inst, r);
-                }
-                Op::FunEnd => {
-                    self.write("}");
-                }
-                Op::Alloc => {
-                    self.inst_eq(i);
-                    let ty = &self.fir.types[i];
-                    self.op_func_1_ty(inst, ty);
-                }
-                Op::Store(dest, src) => {
-                    self.op_func_2_ref_ref(inst, dest, src);
-                }
-                Op::Branch { cond, t, f } => {
-                    self.op_func_3_ref_ref_ref(inst, cond, t, f);
-                }
-                Op::Jump(dest) => {
-                    self.op_func_1_ref(inst, dest);
-                }
-                Op::Phi {
-                    a: (a_from, a_res),
-                    b: (b_from, b_res),
-                } => {
-                    self.inst_eq(i);
-                    self.op_name(*inst);
-                    self.paren_start();
+    let mut cur_func_i = None;
+    let mut offset = 0;
 
-                    self.write_type_ref_at(i);
-
-                    self.sep();
-
-                    self.brack_start();
-                    self.write_ref(a_from);
-                    self.write(" -> ");
-                    self.write_ref(a_res);
-                    self.brack_end();
-
-                    self.sep();
-
-                    self.brack_start();
-                    self.write_ref(b_from);
-                    self.write(" -> ");
-                    self.write_ref(b_res);
-                    self.brack_end();
-
-                    self.paren_end();
-                }
-                Op::Label => {
-                    self.inst_eq(i);
-                    self.op_name(*inst);
-                    self.paren_start();
-                    self.paren_end();
-                }
-                _ => unimplemented!("FIR op {:?} not implemented", inst),
-            };
-            let next_is_fun_end = matches!(self.fir.ops.get(i + 1), Some(Op::FunEnd));
-            if next_is_fun_end {
-                // set here so the newline is not printed with indent before closing brace
-                let func_start = self.cur_func_i.take().expect("in function before func end");
-                // NOTE: +3 for the +1 offset of func_start, funEnd, and ???
-                self.offset += (i - func_start + 3) as u32;
+    for (i, inst) in fir.ops.iter().enumerate() {
+        match inst {
+            Op::Load(r) => {
+                write_inst_eq(fs, i, cur_func_i, offset);
+                let ty = &fir.types[i];
+                write_op_func_start(fs, inst);
+                write_type_ref(fs, ty);
+                write_sep(fs);
+                write_ref(fs, r, fir, offset);
+                write_func_end(fs);
             }
-            let not_at_last_op = i < self.fir.ops.len();
-            if not_at_last_op {
-                self.newline();
+            Op::Add(lhs, rhs)
+            | Op::Sub(lhs, rhs)
+            | Op::Mul(lhs, rhs)
+            | Op::Div(lhs, rhs)
+            | Op::Gt(lhs, rhs)
+            | Op::GtEq(lhs, rhs)
+            | Op::Lt(lhs, rhs)
+            | Op::LtEq(lhs, rhs)
+            | Op::Eq(lhs, rhs) => {
+                write_inst_eq(fs, i, cur_func_i, offset);
+                let ty = &fir.types[i];
+                write_op_name(fs, inst);
+                write_paren_start(fs);
+                write_type_ref(fs, ty);
+                write_sep(fs);
+                write_ref(fs, lhs, fir, offset);
+                write_sep(fs);
+                write_ref(fs, rhs, fir, offset);
+                write_paren_end(fs);
+            }
+            Op::FunDef { name } => {
+                // let in_func = in_func();
+                // assert!(!in_func, "nested functions not supported");
+                fs.write("define");
+                write_space(fs);
+                let return_ty = &fir.types[i];
+                write_type_ref(fs, return_ty);
+                write_space(fs);
+                write_func_ref(fs, &fir.data, *name);
+                write_space(fs);
+                fs.write("{");
+                cur_func_i = Some(i + 1);
+            }
+            Op::FunArg => {
+                // assert!(in_func(), "arg decl outside of function");
+                write_inst_eq(fs, i, cur_func_i, offset);
+                let ty = &fir.types[i];
+                write_op_func_1_ty(fs, inst, ty);
+            }
+            Op::FunCall { fun: fun_i, args } => {
+                let Op::FunDef { name } = &fir.ops[*fun_i as usize] else {
+                    unreachable!("fun call ref not fun def");
+                };
+                write_inst_eq(fs, i, cur_func_i, offset);
+                write_op_name(fs, inst); // "call"
+                write_paren_start(fs);
+                write_type_ref_at(fs, &fir.types, i);
+                write_sep(fs);
+                write_func_ref(fs, &fir.data, *name);
+                write_sep(fs);
+                write_brack_start(fs);
+                let ast::ExtraFunArgs { args } = fir.extra.get::<ast::ExtraFunArgs>(*args);
+                for arg in args.iter().take(args.len() - 1) {
+                    write_inst_ref(fs, *arg, offset);
+                    write_sep(fs);
+                }
+                write_inst_ref(fs, *args.last().unwrap(), offset);
+                write_brack_end(fs);
+                write_paren_end(fs);
+            }
+            Op::Ret(r) => {
+                write_inst_eq(fs, i, cur_func_i, offset);
+                write_op_func_1_ref(fs, inst, r, &fir, offset);
+            }
+            Op::FunEnd => {
+                fs.write("}");
+            }
+            Op::Alloc => {
+                write_inst_eq(fs, i, cur_func_i, offset);
+                let ty = &fir.types[i];
+                write_op_func_1_ty(fs, inst, ty);
+            }
+            Op::Store(dest, src) => {
+                write_op_func_start(fs, inst);
+                write_ref(fs, dest, fir, offset);
+                write_sep(fs);
+                write_ref(fs, src, fir, offset);
+                write_paren_end(fs);
+            }
+            Op::Branch { cond, t, f } => {
+                write_op_name(fs, inst);
+                write_paren_start(fs);
+                write_ref(fs, cond, fir, offset);
+                write_sep(fs);
+                write_ref(fs, t, fir, offset);
+                write_sep(fs);
+                write_ref(fs, f, fir, offset);
+                write_paren_end(fs);
+            }
+            Op::Jump(dest) => {
+                write_op_func_1_ref(fs, inst, dest, &fir, offset);
+            }
+            Op::Phi {
+                a: (a_from, a_res),
+                b: (b_from, b_res),
+            } => {
+                write_inst_eq(fs, i, cur_func_i, offset);
+                write_op_name(fs, inst);
+                write_paren_start(fs);
+
+                write_type_ref_at(fs, &fir.types, i);
+
+                write_sep(fs);
+
+                write_brack_start(fs);
+                write_ref(fs, a_from, fir, offset);
+                fs.write(" -> ");
+                write_ref(fs, a_res, fir, offset);
+                write_brack_end(fs);
+
+                write_sep(fs);
+
+                write_brack_start(fs);
+                write_ref(fs, b_from, fir, offset);
+                fs.write(" -> ");
+                write_ref(fs, b_res, fir, offset);
+                write_brack_end(fs);
+
+                write_paren_end(fs);
+            }
+            Op::Label => {
+                write_inst_eq(fs, i, cur_func_i, offset);
+                write_op_name(fs, inst);
+                write_paren_start(fs);
+                write_paren_end(fs);
+            }
+        };
+        let next_is_fun_end = matches!(fir.ops.get(i + 1), Some(Op::FunEnd));
+        if next_is_fun_end {
+            // set here so the newline is not printed with indent before closing brace
+            let func_start = cur_func_i.take().expect("in function before func end");
+            // NOTE: +3 for the +1 offset of func_start, funEnd, and ???
+            offset += (i - func_start + 3) as u32;
+        }
+        let not_at_last_op = i < fir.ops.len();
+        if not_at_last_op {
+            write_newline(fs);
+            if cur_func_i.is_some() {
+                fs.write(INDENT);
             }
         }
-        return self.str;
     }
+    return _fs.0;
+}
 
-    fn write(&mut self, str: &str) {
-        self.str.push_str(str);
-    }
+fn write_op_func_1_ref(fs: &mut FirStr, op: &Op, arg: &Ref, fir: &FIR, offset: u32) {
+    write_op_func_start(fs, op);
+    write_ref(fs, arg, fir, offset);
+    write_paren_end(fs);
+}
 
-    fn newline(&mut self) {
-        self.write("\n");
-        if self.in_func() {
-            self.write(Self::INDENT);
+fn write_op_func_1_ty(fs: &mut FirStr, op: &Op, arg: &TypeRef) {
+    write_op_func_start(fs, op);
+    write_type_ref(fs, arg);
+    write_paren_end(fs);
+}
+
+fn write_func_ref(fs: &mut FirStr, data: &ast::DataPool, i: DIndex) {
+    fs.write("@");
+    write_ident(fs, data, i);
+}
+
+fn write_ref(fs: &mut FirStr, r: &Ref, fir: &FIR, offset: u32) {
+    match r {
+        Ref::Const(i) => {
+            write_func_start(fs, "const");
+            write_const(fs, fir, *i);
+            write_func_end(fs);
         }
+        Ref::Inst(i) => write_inst_ref(fs, *i, offset),
     }
+}
 
-    fn space(&mut self) {
-        self.write(" ");
-    }
+fn write_op_func_start(fs: &mut FirStr, op: &Op) {
+    let name = get_op_name(op);
+    fs.write(name);
+    write_paren_start(fs);
+}
 
-    fn func_1<F>(&mut self, name: &str, arg: F)
-    where
-        F: FnOnce(&mut Self),
-    {
-        self.write(name);
-        self.paren_start();
-        arg(self);
-        self.paren_end();
-    }
+fn write_func_start(fs: &mut FirStr, name: &str) {
+    fs.write(name);
+    write_paren_start(fs);
+}
 
-    fn op_func_1<F>(&mut self, op: Op, arg: F)
-    where
-        F: FnOnce(&mut Self),
-    {
-        let name = self.get_op_name(op);
-        self.func_1(name, arg);
-    }
+fn write_func_end(fs: &mut FirStr) {
+    write_paren_end(fs);
+}
 
-    fn op_func_1_ref(&mut self, op: &Op, arg: &Ref) {
-        let name = self.get_op_name(*op);
-        self.write(name);
-        self.paren_start();
-        self.write_ref(arg);
-        self.paren_end();
-    }
+fn write_const(fs: &mut FirStr, fir: &FIR, i: u32) {
+    let cnst = fir.get_const(i);
+    fs.write(cnst.to_string().as_str());
+}
 
-    fn op_func_1_ty(&mut self, op: &Op, arg: &TypeRef) {
-        let name = self.get_op_name(*op);
-        self.write(name);
-        self.paren_start();
-        self.write_type_ref(arg);
-        self.paren_end();
+fn write_inst_eq(fs: &mut FirStr, i: usize, cur_func_i: Option<usize>, offset: u32) {
+    let mut inst_i = i;
+    if let Some(func_offset) = cur_func_i {
+        inst_i -= func_offset;
     }
+    write_inst_ref(fs, inst_i as u32, offset);
+    fs.write(" = ");
+}
 
-    fn func_2<F1, F2>(&mut self, name: &str, arg1: F1, arg2: F2)
-    where
-        F1: FnOnce(&mut Self),
-        F2: FnOnce(&mut Self),
-    {
-        self.write(name);
-        self.paren_start();
-        arg1(self);
-        self.sep();
-        arg2(self);
-        self.paren_end();
-    }
+fn write_inst_ref(fs: &mut FirStr, i: u32, offset: u32) {
+    fs.write("%");
+    let ref_i = i - offset;
+    fs.write(ref_i.to_string().as_str());
+}
+fn write_ident(fs: &mut FirStr, data: &ast::DataPool, i: DIndex) {
+    let str = data.get_ref::<str>(i);
+    fs.write(str);
+}
 
-    fn op_func_2<F1, F2>(&mut self, op: Op, arg1: F1, arg2: F2)
-    where
-        F1: FnOnce(&mut Self),
-        F2: FnOnce(&mut Self),
-    {
-        let name = self.get_op_name(op);
-        self.func_2(name, arg1, arg2);
-    }
-    fn op_func_2_ref_ref(&mut self, op: &Op, arg1: &Ref, arg2: &Ref) {
-        let name = self.get_op_name(*op);
-        self.write(name);
-        self.paren_start();
-        self.write_ref(arg1);
-        self.sep();
-        self.write_ref(arg2);
-        self.paren_end();
-    }
+fn write_type_ref(fs: &mut FirStr, ty: &TypeRef) {
+    use TypeRef::*;
+    let str = match ty {
+        IntU64 => "u64",
+        None => "_",
+    };
+    fs.write(str);
+}
 
-    fn op_func_2_ty_ref(&mut self, op: &Op, arg1: &TypeRef, arg2: &Ref) {
-        let name = self.get_op_name(*op);
-        self.write(name);
-        self.paren_start();
-        self.write_type_ref(arg1);
-        self.sep();
-        self.write_ref(arg2);
-        self.paren_end();
-    }
+fn write_type_ref_at(fs: &mut FirStr, types: &[TypeRef], i: usize) {
+    let ty = &types[i];
+    write_type_ref(fs, ty);
+}
 
-    fn op_func_3_ty_ref_ref(&mut self, op: &Op, ty: &TypeRef, a: &Ref, b: &Ref) {
-        self.op_name(*op);
-        self.paren_start();
-        self.write_type_ref(ty);
-        self.sep();
-        self.write_ref(a);
-        self.sep();
-        self.write_ref(b);
-        self.paren_end();
-    }
+fn write_newline(fs: &mut FirStr) {
+    fs.write("\n");
+}
+fn write_space(fs: &mut FirStr) {
+    fs.write(" ");
+}
 
-    fn op_func_3_ref_ref_ref(&mut self, op: &Op, a: &Ref, b: &Ref, c: &Ref) {
-        self.op_name(*op);
-        self.paren_start();
-        self.write_ref(a);
-        self.sep();
-        self.write_ref(b);
-        self.sep();
-        self.write_ref(c);
-        self.paren_end();
-    }
+fn write_brack_start(fs: &mut FirStr) {
+    fs.write("[");
+}
 
-    fn inst_ref(&mut self, i: u32) {
-        self.write("%");
-        let i = i - self.offset;
-        self.write(i.to_string().as_str());
-    }
+fn write_brack_end(fs: &mut FirStr) {
+    fs.write("]");
+}
 
-    fn inst_eq(&mut self, mut i: usize) {
-        if let Some(func_offset) = self.cur_func_i {
-            i -= func_offset;
-        }
-        self.inst_ref(i as u32);
-        self.write(" = ");
-    }
+fn write_paren_start(fs: &mut FirStr) {
+    fs.write("(");
+}
 
-    fn func_ref(&mut self, i: DIndex) {
-        self.write("@");
-        self.write_ident(i);
-    }
+fn write_paren_end(fs: &mut FirStr) {
+    fs.write(")");
+}
 
-    fn write_ref(&mut self, r: &Ref) {
-        match r {
-            Ref::Const(i) => self.func_1("const", |s| s.write(&self.fir.get_const(*i).to_string())),
-            Ref::Inst(i) => self.inst_ref(*i),
-        }
-    }
+fn write_sep(fs: &mut FirStr) {
+    fs.write(", ");
+}
 
-    fn write_type_ref(&mut self, ty: &TypeRef) {
-        use TypeRef::*;
-        let str = match ty {
-            IntU64 => "u64",
-            None => "_",
-        };
-        self.write(str);
-    }
+fn write_op_name(fs: &mut FirStr, op: &Op) {
+    let str = get_op_name(op);
+    fs.write(str);
+}
 
-    fn write_type_ref_at(&mut self, i: usize) {
-        let ty = &self.fir.types[i];
-        self.write_type_ref(ty);
-    }
-
-    fn write_ident(&mut self, i: DIndex) {
-        let str = self.fir.data.get_ref::<str>(i);
-        self.write(str);
-    }
-
-    fn op_name(&mut self, op: Op) {
-        let str = self.get_op_name(op);
-        self.write(str);
-    }
-
-    fn in_func(&self) -> bool {
-        return self.cur_func_i.is_some();
-    }
-
-    fn brack_start(&mut self) {
-        self.write("[");
-    }
-
-    fn brack_end(&mut self) {
-        self.write("]");
-    }
-
-    fn paren_start(&mut self) {
-        self.write("(");
-    }
-
-    fn paren_end(&mut self) {
-        self.write(")");
-    }
-
-    fn sep(&mut self) {
-        self.write(", ");
-    }
-    fn get_op_name(&self, op: Op) -> &'static str {
-        use Op::*;
-        match op {
-            FunDef { .. } => "define",
-            FunEnd => "fun_end",
-            FunArg => "arg",
-            FunCall { .. } => "call",
-            Ret(_) => "ret",
-            Alloc => "alloc",
-            Load(_) => "load",
-            Store(_, _) => "store",
-            Add(_, _) => "add",
-            Sub(_, _) => "sub",
-            Mul(_, _) => "mul",
-            Div(_, _) => "div",
-            Eq(_, _) => "cmp_eq",
-            Lt(_, _) => "cmp_lt",
-            LtEq(_, _) => "cmp_lteq",
-            Gt(_, _) => "cmp_gt",
-            GtEq(_, _) => "cmp_gteq",
-            Branch { .. } => "br",
-            Jump(_) => "jmp",
-            Phi { .. } => "phi",
-            Label => "label",
-        }
+fn get_op_name(op: &Op) -> &'static str {
+    use Op::*;
+    match op {
+        FunDef { .. } => "define",
+        FunEnd => "fun_end",
+        FunArg => "arg",
+        FunCall { .. } => "call",
+        Ret(_) => "ret",
+        Alloc => "alloc",
+        Load(_) => "load",
+        Store(_, _) => "store",
+        Add(_, _) => "add",
+        Sub(_, _) => "sub",
+        Mul(_, _) => "mul",
+        Div(_, _) => "div",
+        Eq(_, _) => "cmp_eq",
+        Lt(_, _) => "cmp_lt",
+        LtEq(_, _) => "cmp_lteq",
+        Gt(_, _) => "cmp_gt",
+        GtEq(_, _) => "cmp_gteq",
+        Branch { .. } => "br",
+        Jump(_) => "jmp",
+        Phi { .. } => "phi",
+        Label => "label",
     }
 }
 
@@ -376,7 +322,7 @@ mod tests {
             let parser = crate::parser::Parser::new($contents);
             let ast = parser.parse().expect("syntax error");
             let fir = FIRGen::generate(ast).expect("failed to generate fir");
-            let fir_str = FIRStringifier::stringify(&fir);
+            let fir_str = stringify(&fir);
             let mut fir_lines = fir_str.lines();
             #[allow(unused)]
             let mut i = 0;
@@ -401,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn chained_algebra() {
+    fn all_binops() {
         assert_fir_str_eq!(
             "(+ 0 ( + 1 ( * 2 (- 3 4))))",
             "%0 = load(u64, const(0))",
