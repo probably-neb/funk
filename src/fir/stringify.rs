@@ -2,12 +2,6 @@ use crate::fir::*;
 
 struct FirStr(String);
 
-impl FirStr {
-    fn write(&mut self, str: &str) {
-        self.0.push_str(str);
-    }
-}
-
 const INDENT: &'static str = "  ";
 
 pub fn stringify(fir: &FIR) -> String {
@@ -38,10 +32,9 @@ pub fn stringify(fir: &FIR) -> String {
             | Op::LtEq(lhs, rhs)
             | Op::Eq(lhs, rhs) => {
                 write_inst_eq(fs, i, cur_func_i, offset);
-                let ty = &fir.types[i];
                 write_op_name(fs, inst);
                 write_paren_start(fs);
-                write_type_ref(fs, ty);
+                write_type_ref_at(fs, &fir.types, i);
                 write_sep(fs);
                 write_ref(fs, lhs, fir, offset);
                 write_sep(fs);
@@ -51,14 +44,14 @@ pub fn stringify(fir: &FIR) -> String {
             Op::FunDef { name } => {
                 // let in_func = in_func();
                 // assert!(!in_func, "nested functions not supported");
-                fs.write("define");
+                write(fs, "define");
                 write_space(fs);
                 let return_ty = &fir.types[i];
                 write_type_ref(fs, return_ty);
                 write_space(fs);
                 write_func_ref(fs, &fir.data, *name);
                 write_space(fs);
-                fs.write("{");
+                write(fs, "{");
                 cur_func_i = Some(i + 1);
             }
             Op::FunArg => {
@@ -72,28 +65,30 @@ pub fn stringify(fir: &FIR) -> String {
                     unreachable!("fun call ref not fun def");
                 };
                 write_inst_eq(fs, i, cur_func_i, offset);
-                write_op_name(fs, inst); // "call"
-                write_paren_start(fs);
+                write_op_func_start(fs, inst);
                 write_type_ref_at(fs, &fir.types, i);
                 write_sep(fs);
                 write_func_ref(fs, &fir.data, *name);
                 write_sep(fs);
                 write_brack_start(fs);
                 let ast::ExtraFunArgs { args } = fir.extra.get::<ast::ExtraFunArgs>(*args);
-                for arg in args.iter().take(args.len() - 1) {
-                    write_inst_ref(fs, *arg, offset);
+                let args_n = args.len().saturating_sub(1);
+                for arg_i in 0..args_n {
+                    write_inst_ref(fs, args[arg_i], offset);
                     write_sep(fs);
                 }
-                write_inst_ref(fs, *args.last().unwrap(), offset);
+                if args_n > 0 {
+                    write_inst_ref(fs, args[args_n], offset);
+                }
                 write_brack_end(fs);
-                write_paren_end(fs);
+                write_func_end(fs);
             }
             Op::Ret(r) => {
                 write_inst_eq(fs, i, cur_func_i, offset);
                 write_op_func_1_ref(fs, inst, r, &fir, offset);
             }
             Op::FunEnd => {
-                fs.write("}");
+                write(fs, "}");
             }
             Op::Alloc => {
                 write_inst_eq(fs, i, cur_func_i, offset);
@@ -105,17 +100,16 @@ pub fn stringify(fir: &FIR) -> String {
                 write_ref(fs, dest, fir, offset);
                 write_sep(fs);
                 write_ref(fs, src, fir, offset);
-                write_paren_end(fs);
+                write_func_end(fs);
             }
             Op::Branch { cond, t, f } => {
-                write_op_name(fs, inst);
-                write_paren_start(fs);
+                write_op_func_start(fs, inst);
                 write_ref(fs, cond, fir, offset);
                 write_sep(fs);
                 write_ref(fs, t, fir, offset);
                 write_sep(fs);
                 write_ref(fs, f, fir, offset);
-                write_paren_end(fs);
+                write_func_end(fs);
             }
             Op::Jump(dest) => {
                 write_op_func_1_ref(fs, inst, dest, &fir, offset);
@@ -125,8 +119,7 @@ pub fn stringify(fir: &FIR) -> String {
                 b: (b_from, b_res),
             } => {
                 write_inst_eq(fs, i, cur_func_i, offset);
-                write_op_name(fs, inst);
-                write_paren_start(fs);
+                write_op_func_start(fs, inst);
 
                 write_type_ref_at(fs, &fir.types, i);
 
@@ -134,7 +127,7 @@ pub fn stringify(fir: &FIR) -> String {
 
                 write_brack_start(fs);
                 write_ref(fs, a_from, fir, offset);
-                fs.write(" -> ");
+                write(fs, " -> ");
                 write_ref(fs, a_res, fir, offset);
                 write_brack_end(fs);
 
@@ -142,17 +135,16 @@ pub fn stringify(fir: &FIR) -> String {
 
                 write_brack_start(fs);
                 write_ref(fs, b_from, fir, offset);
-                fs.write(" -> ");
+                write(fs, " -> ");
                 write_ref(fs, b_res, fir, offset);
                 write_brack_end(fs);
 
-                write_paren_end(fs);
+                write_func_end(fs);
             }
             Op::Label => {
                 write_inst_eq(fs, i, cur_func_i, offset);
-                write_op_name(fs, inst);
-                write_paren_start(fs);
-                write_paren_end(fs);
+                write_op_func_start(fs, inst);
+                write_func_end(fs);
             }
         };
         let next_is_fun_end = matches!(fir.ops.get(i + 1), Some(Op::FunEnd));
@@ -166,11 +158,15 @@ pub fn stringify(fir: &FIR) -> String {
         if not_at_last_op {
             write_newline(fs);
             if cur_func_i.is_some() {
-                fs.write(INDENT);
+                write(fs, INDENT);
             }
         }
     }
     return _fs.0;
+}
+
+fn write(fs: &mut FirStr, str: &str) {
+    fs.0.push_str(str);
 }
 
 fn write_op_func_1_ref(fs: &mut FirStr, op: &Op, arg: &Ref, fir: &FIR, offset: u32) {
@@ -186,7 +182,7 @@ fn write_op_func_1_ty(fs: &mut FirStr, op: &Op, arg: &TypeRef) {
 }
 
 fn write_func_ref(fs: &mut FirStr, data: &ast::DataPool, i: DIndex) {
-    fs.write("@");
+    write(fs, "@");
     write_ident(fs, data, i);
 }
 
@@ -203,12 +199,12 @@ fn write_ref(fs: &mut FirStr, r: &Ref, fir: &FIR, offset: u32) {
 
 fn write_op_func_start(fs: &mut FirStr, op: &Op) {
     let name = get_op_name(op);
-    fs.write(name);
+    write(fs, name);
     write_paren_start(fs);
 }
 
 fn write_func_start(fs: &mut FirStr, name: &str) {
-    fs.write(name);
+    write(fs, name);
     write_paren_start(fs);
 }
 
@@ -218,7 +214,7 @@ fn write_func_end(fs: &mut FirStr) {
 
 fn write_const(fs: &mut FirStr, fir: &FIR, i: u32) {
     let cnst = fir.get_const(i);
-    fs.write(cnst.to_string().as_str());
+    write(fs, cnst.to_string().as_str());
 }
 
 fn write_inst_eq(fs: &mut FirStr, i: usize, cur_func_i: Option<usize>, offset: u32) {
@@ -227,17 +223,17 @@ fn write_inst_eq(fs: &mut FirStr, i: usize, cur_func_i: Option<usize>, offset: u
         inst_i -= func_offset;
     }
     write_inst_ref(fs, inst_i as u32, offset);
-    fs.write(" = ");
+    write(fs, " = ");
 }
 
 fn write_inst_ref(fs: &mut FirStr, i: u32, offset: u32) {
-    fs.write("%");
+    write(fs, "%");
     let ref_i = i - offset;
-    fs.write(ref_i.to_string().as_str());
+    write(fs, ref_i.to_string().as_str());
 }
 fn write_ident(fs: &mut FirStr, data: &ast::DataPool, i: DIndex) {
     let str = data.get_ref::<str>(i);
-    fs.write(str);
+    write(fs, str);
 }
 
 fn write_type_ref(fs: &mut FirStr, ty: &TypeRef) {
@@ -246,7 +242,7 @@ fn write_type_ref(fs: &mut FirStr, ty: &TypeRef) {
         IntU64 => "u64",
         None => "_",
     };
-    fs.write(str);
+    write(fs, str);
 }
 
 fn write_type_ref_at(fs: &mut FirStr, types: &[TypeRef], i: usize) {
@@ -255,35 +251,35 @@ fn write_type_ref_at(fs: &mut FirStr, types: &[TypeRef], i: usize) {
 }
 
 fn write_newline(fs: &mut FirStr) {
-    fs.write("\n");
+    write(fs, "\n");
 }
 fn write_space(fs: &mut FirStr) {
-    fs.write(" ");
+    write(fs, " ");
 }
 
 fn write_brack_start(fs: &mut FirStr) {
-    fs.write("[");
+    write(fs, "[");
 }
 
 fn write_brack_end(fs: &mut FirStr) {
-    fs.write("]");
+    write(fs, "]");
 }
 
 fn write_paren_start(fs: &mut FirStr) {
-    fs.write("(");
+    write(fs, "(");
 }
 
 fn write_paren_end(fs: &mut FirStr) {
-    fs.write(")");
+    write(fs, ")");
 }
 
 fn write_sep(fs: &mut FirStr) {
-    fs.write(", ");
+    write(fs, ", ");
 }
 
 fn write_op_name(fs: &mut FirStr, op: &Op) {
     let str = get_op_name(op);
-    fs.write(str);
+    write(fs, str);
 }
 
 fn get_op_name(op: &Op) -> &'static str {
@@ -411,6 +407,18 @@ mod tests {
             "%0 = load(u64, const(1))",
             "%1 = load(u64, const(2))",
             "%2 = call(u64, @add, [%0, %1])"
+        );
+    }
+
+    #[test]
+    fn funcall_noargs() {
+        assert_fir_str_eq!(
+            "(fun one () 1) (one)",
+            "define u64 @one {",
+            "  %0 = load(u64, const(1))",
+            "  %1 = ret(%0)",
+            "}",
+            "%0 = call(u64, @one, [])"
         );
     }
 
