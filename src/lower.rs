@@ -192,14 +192,26 @@ impl Assembler {
                 };
                 self.end_jmp_if_zero(jmp_t);
                 let end_t_op = self.assemble_basic_block(t_i);
-                match end_t_op {
-                    fir::Op::Ret(..) | fir::Op::Branch {..} => self._assemble_op(end_t_op),
-                    fir::Op::Jump(..) => todo!(),
-                    _ => unreachable!()
-                }
-                self.end_jmp_if_zero(jmp_t);
+                self.end_jmp_if_zero(jmp_f);
                 let end_f_op = self.assemble_basic_block(f_i);
+                self._assemble_op(end_t_op);
+                self._assemble_op(end_f_op);
 
+            }
+            Jump(i) => {
+                let jmp = self.init_jmp();
+                let fir::Ref::Inst(jmp_to_i) = i else {
+                    unreachable!("jump not inst {:?}", i);
+                };
+                self.end_jmp(jmp);
+                let end_jmp_to_i = self.assemble_basic_block(jmp_to_i);
+
+            }
+            Phi {
+                a: (a_from, a_res),
+                b: (b_from, b_res),
+            } => {
+                
             }
             _ => unimplemented!("op: {:?} i: {}", op, self.cursor - 1),
         }
