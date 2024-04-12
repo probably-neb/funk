@@ -217,6 +217,17 @@ impl Assembler {
         }
     }
 
+    fn insert_phi_copies(&mut self, from_bb: u32, to_bb: u32) {
+        let fir = &self.fir;
+        let bb = slice_basic_block(fir, to_bb);
+        for op in bb {
+            let fir::Op::Phi {a, b} = op else {
+                continue;
+            };
+            todo!("match on a,b checking if the from is from_bb. then insert necessary copies")
+        }
+    }
+
     fn assemble_basic_block(&mut self, start: u32) -> fir::Op {
         self.cursor = start as usize;
         let fir::Op::Label = self.fir.ops[self.cursor] else {
@@ -312,6 +323,16 @@ impl Assembler {
         &self.bytecode
     }
 }
+
+fn slice_basic_block<'s>(fir: &'s fir::FIR, start: u32) -> &'s [fir::Op] {
+    let start = start as usize;
+    let mut end = start;
+    while !fir.ops[end].is_ctrl_flow() && end < fir.ops.len() {
+        end += 1;
+    }
+    return &fir.ops[start..=end];
+}
+
 
 fn references_top_of_stack(r: fir::Ref, scope: &ScopeStack) -> bool {
     match r {
