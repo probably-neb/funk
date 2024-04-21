@@ -14,10 +14,11 @@ fn into_tree(ast: &Ast) -> TreeNode<String> {
     let mut visited = vec![false; ast.exprs.len()];
     let mut root = TreeNode::new("Root".to_string());
     for (i, expr) in ast.exprs.iter().enumerate() {
-        if !visited[i] {
-            let node = expr_into_treenode(expr.clone(), ast, &mut visited);
-            root.add_node(node);
+        if visited[i] {
+            continue;
         }
+        let node = expr_into_treenode(expr.clone(), ast, &mut visited);
+        root.add_node(node);
     }
     return root;
 }
@@ -50,7 +51,7 @@ impl<T: std::fmt::Display> TreeNode<T> {
             if is_last { "└─ " } else { "├─ " },
             self.data
         );
-        let new_prefix = if is_last { "    " } else { "|   " };
+        let new_prefix = if is_last { "    " } else { "│   " };
 
         let children = &self.children;
         let last_index = children.len().saturating_sub(1);
@@ -102,9 +103,8 @@ fn expr_into_treenode(expr: Expr, ast: &Ast, visited: &mut [bool]) -> TreeNode<S
         FunDef { args, body, .. } => {
             let mut arg_node = TreeNode::new("Args".to_string());
             for arg_i in ast.fun_args_slice(args) {
-                let arg = expr_into_treenode(expr, ast, visited);
+                let arg = TreeNode::new(ast.get_ident(*arg_i as usize).to_string());
                 arg_node.add_node(arg);
-                visited[*arg_i as usize] = true;
             }
             node.add_node(arg_node);
 

@@ -205,7 +205,7 @@ impl<'a> Parser<'a> {
                 Ok(i)
             },
             Token::Ident(range) => {
-                let expr =  Expr::Ident(self.intern_str(range));
+                let expr = Expr::Ident(self.intern_str(range));
                 let i = self.push_typed(expr, ast::Type::Unknown );
                 Ok(i)
             },
@@ -782,5 +782,13 @@ pub mod tests {
                 )
         "#;
         let parser = parse(contents).expect("parser error");
+    }
+
+    #[test]
+    fn echo() {
+        let contents = r#"(fun echo (a) a)"#;
+        let parser = parse(contents).expect("parser error");
+        assert_matches!(parser.exprs[0], Expr::FunDef {name: _, args: _, body: _});
+        assert_matches!(parser.exprs[1], Expr::Ident(_));
     }
 }

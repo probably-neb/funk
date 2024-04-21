@@ -566,4 +566,21 @@ mod tests {
             ]
         );
     }
+
+
+    #[test]
+    fn echo() {
+        let contents = r#"(fun echo (a) a)"#;
+        use Op::*;
+        assert_results_in_fir!(
+            contents,
+            [
+                FunDef {..},
+                FunArg,
+                Load(Ref::Inst(0)),
+                Ret(Ref::Inst(1)),
+                FunEnd
+            ]
+        );
+    }
 }
