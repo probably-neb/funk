@@ -47,6 +47,13 @@ impl Ast {
 
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Type {
+    Unknown,
+    UInt64,
+    String,
+}
+
 // Wraps a HashMap<u64, DIndex> to use byte slices as keys
 // by hashing the byte slice and using the resulting u64
 // as the key

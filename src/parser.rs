@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 
 use crate::{
-    ast::{Ast, DIndex, DataPool, self},
+    ast::{self, Ast, DIndex, DataPool},
     lexer::{self, Lexer, Token},
 };
 
@@ -20,7 +20,8 @@ pub struct Parser<'a> {
     tokens: Vec<Token>,
     exprs: Vec<Expr>,
     data: DataPool,
-    extra: ast::Extra
+    extra: ast::Extra,
+    types: Vec<ast::Type>,
 }
 
 #[allow(dead_code)]
@@ -91,7 +92,8 @@ impl<'a> Parser<'a> {
             exprs: Vec::new(),
             tok_i: usize::MAX,
             data: DataPool::new(),
-            extra: ast::Extra::new()
+            extra: ast::Extra::new(),
+            types: Vec::new(),
         }
     }
     pub fn new(contents: &'a str) -> Parser<'a> {
@@ -155,7 +157,7 @@ impl<'a> Parser<'a> {
     fn peek_tok(&mut self) -> Option<Token> {
         let (peek_i, has_peeked) = self._peek_i();
         if has_peeked {
-            return Some(self.tokens[peek_i])
+            return Some(self.tokens[peek_i]);
         }
         let tok = self.lxr.next_token().expect("lexer error");
         match tok {
@@ -169,6 +171,13 @@ impl<'a> Parser<'a> {
 
     fn push(&mut self, expr: Expr) -> EIndex {
         self.exprs.push(expr);
+        self.types.push(ast::Type::Unknown);
+        return self.exprs.len() - 1;
+    }
+
+    fn push_typed(&mut self, expr: Expr, ty: ast::Type) -> EIndex {
+        self.exprs.push(expr);
+        self.types.push(ty);
         return self.exprs.len() - 1;
     }
 
@@ -181,21 +190,33 @@ impl<'a> Parser<'a> {
 
     fn expr(&mut self) -> Option<Result<EIndex>> {
         let mut tok = self.tok()?;
-        let in_block = tok == Token::LParen ;
+        let in_block = tok == Token::LParen;
         if in_block {
             tok = self.tok()?;
         }
-        let expr = match tok {
-            Token::Int(range) => Ok(Expr::Int(self.intern_int(range))),
+        let res = match tok {
             Token::Ident(range) if in_block => {
                 let name = self.intern_str(range);
-                return Some(self.fun_call(name));
+                self.fun_call(name)
             }
-            Token::Ident(range) => Ok(Expr::Ident(self.intern_str(range))),
-            Token::String(range) => Ok(Expr::String(self.intern_str(range))),
-            Token::If => return Some(self.if_expr()),
-            Token::Fun => return Some(self.fun_expr()),
-            Token::Let => return Some(self.bind_expr()),
+            Token::Int(range) => { 
+                let expr = Expr::Int(self.intern_int(range));
+                let i = self.push_typed(expr, ast::Type::UInt64);
+                Ok(i)
+            },
+            Token::Ident(range) => {
+                let expr =  Expr::Ident(self.intern_str(range));
+                let i = self.push_typed(expr, ast::Type::Unknown );
+                Ok(i)
+            },
+            Token::String(range) => {
+                let expr =  Expr::String(self.intern_str(range));
+                let i = self.push_typed(expr, ast::Type::String );
+                Ok(i)
+            },
+            Token::If => self.if_expr(),
+            Token::Fun => self.fun_expr(),
+            Token::Let => self.bind_expr(),
             Token::Eq
             | Token::DblEq
             | Token::Mul
@@ -205,16 +226,12 @@ impl<'a> Parser<'a> {
             | Token::LtEq
             | Token::GtEq
             | Token::Lt
-            | Token::Gt => return Some(self.binop_expr(Binop::from(tok))),
+            | Token::Gt => self.binop_expr(Binop::from(tok)),
             _ => {
                 unimplemented!("{:?} not implemented", tok)
             }
         };
-
-        match expr {
-            Err(err) => return Some(Err(err)),
-            Ok(expr) => return Some(Ok(self.push(expr))),
-        }
+        return Some(res);
     }
 
     fn intern_int(&mut self, range: lexer::Range) -> DIndex {
@@ -235,10 +252,7 @@ impl<'a> Parser<'a> {
     fn fun_call(&mut self, name: DIndex) -> Result<EIndex> {
         let call = self.reserve();
         let args = self.fun_call_args()?;
-        self.exprs[call] = Expr::FunCall {
-            name,
-            args
-        };
+        self.exprs[call] = Expr::FunCall { name, args };
         eat!(self, Token::RParen, "end of fun call").with_context(|| {
             print_tree(self);
             "fun call err"
@@ -343,7 +357,6 @@ impl<'a> Parser<'a> {
         Ok(extra_args_len)
     }
 
-
     fn bind_expr(&mut self) -> Result<EIndex> {
         let bind_i = self.reserve();
         let Token::Ident(range) = eat!(self, Token::Ident(_))? else {
@@ -366,7 +379,10 @@ impl<'a> Parser<'a> {
     }
 
     fn fun_arg_names_iter<'s>(&'s self, i: XIndex) -> impl Iterator<Item = &'s str> {
-        return self.fun_args_slice(i).iter().map(|a| self.data.get_ref::<str>(*a as usize));
+        return self
+            .fun_args_slice(i)
+            .iter()
+            .map(|a| self.data.get_ref::<str>(*a as usize));
     }
 
     fn get_ident<'s>(&'s self, i: usize) -> &'s str {
@@ -387,6 +403,7 @@ pub enum Binop {
     GtEq,
 }
 
+// FIXME: should return Result<Binop> instead of panicing
 impl From<Token> for Binop {
     fn from(value: Token) -> Self {
         match value {
@@ -496,11 +513,11 @@ fn expr_into_treenode(expr: Expr, parser: &Parser<'_>, visited: &mut [bool]) -> 
             visit!(branch_true);
             visit!(branch_false);
         }
-        Binop { lhs, rhs, ..} => {
+        Binop { lhs, rhs, .. } => {
             visit!(lhs);
             visit!(rhs);
         }
-        FunDef { args, body, ..} => {
+        FunDef { args, body, .. } => {
             let mut arg_node = TreeNode::new("Args".to_string());
             for arg_i in parser.fun_args_slice(args) {
                 let arg = expr_into_treenode(expr, parser, visited);
@@ -525,11 +542,9 @@ fn repr_expr(expr: Expr, parser: &Parser<'_>) -> String {
     match expr {
         Expr::Nop => "Nop".to_string(),
         Expr::Int(i) => format!("Int {}", parser.data.get::<u64>(i)),
-        Expr::Binop { op,..} => format!("{:?}", op),
-        Expr::If {
-            ..
-        } => "If".to_string(),
-        Expr::FunDef { name, ..} => format!("Fun {:?}", parser.get_ident(name)),
+        Expr::Binop { op, .. } => format!("{:?}", op),
+        Expr::If { .. } => "If".to_string(),
+        Expr::FunDef { name, .. } => format!("Fun {:?}", parser.get_ident(name)),
         Expr::FunCall { name, .. } => format!("Call {:?}", parser.get_ident(name)),
         Expr::Ident(i) => format!("Ident {:?}", parser.get_ident(i)),
         Expr::String(i) => format!("Str \"{:?}\"", parser.get_ident(i)),
@@ -700,6 +715,27 @@ pub mod tests {
     }
 
     #[test]
+    fn if_expr_types() {
+        let contents = r#"(if (== 4 4) "yes" "no")"#;
+        let parser = parse(contents).expect("parser error");
+
+        let_assert_matches!(
+            parser.exprs[0],
+            Expr::If {
+                cond,
+                branch_true,
+                branch_false,
+            }
+        );
+        let_assert_matches!(parser.exprs[cond], Expr::Binop { op: _, lhs, rhs });
+        assert_eq!(parser.types[branch_true], ast::Type::String);
+        assert_eq!(parser.types[branch_false], ast::Type::String);
+
+        assert_eq!(parser.types[lhs], ast::Type::UInt64);
+        assert_eq!(parser.types[rhs], ast::Type::UInt64);
+    }
+
+    #[test]
     fn fun_expr() {
         let contents = "(fun foo (a b) (+ a b))";
         let parser = parse(contents).expect("parser error");
@@ -730,11 +766,14 @@ pub mod tests {
         let contents = "(fun foo (a b c d) (a))";
         let parser = parse(contents).expect("parser error");
 
-        let ast::ExtraFunArgs {args} = parser.extra.get::<ast::ExtraFunArgs>(0);
+        let ast::ExtraFunArgs { args } = parser.extra.get::<ast::ExtraFunArgs>(0);
 
         assert_eq!(args.len(), 4);
 
-        let arg_strs: Vec<&str> = args.iter().map(|a| parser.data.get_ref::<str>(*a as usize)).collect();
+        let arg_strs: Vec<&str> = args
+            .iter()
+            .map(|a| parser.data.get_ref::<str>(*a as usize))
+            .collect();
         let expected_arg_strs = vec!["a", "b", "c", "d"];
 
         assert_eq!(arg_strs, expected_arg_strs);
@@ -745,7 +784,7 @@ pub mod tests {
         let contents = "(foo 0 1 2 3)";
         let parser = parse(contents).expect("parser error");
 
-        let ast::ExtraFunArgs {args} = parser.extra.get::<ast::ExtraFunArgs>(0);
+        let ast::ExtraFunArgs { args } = parser.extra.get::<ast::ExtraFunArgs>(0);
 
         assert_eq!(args.len(), 4);
 
@@ -766,7 +805,7 @@ pub mod tests {
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
 
         {
-            let ast::ExtraFunArgs {args} = parser.extra.get::<ast::ExtraFunArgs>(args);
+            let ast::ExtraFunArgs { args } = parser.extra.get::<ast::ExtraFunArgs>(args);
             assert_eq!(args.len(), 1);
         }
 
@@ -803,6 +842,14 @@ pub mod tests {
     }
 
     #[test]
+    fn var_bind_types() {
+        let contents = "(let a 1)";
+        let parser = parse(contents).expect("parser error");
+        let_assert_matches!(parser.exprs[0], Expr::Bind { name, value });
+        assert_eq!(parser.types[value], ast::Type::UInt64);
+    }
+
+    #[test]
     fn fun_call() {
         let contents = "(foo 1 2)";
         let parser = parse(contents).expect("parser error");
@@ -821,7 +868,31 @@ pub mod tests {
         let &[binop_arg, _] = parser.fun_args_slice(args) else {
             unreachable!();
         };
-        assert_matches!(parser.exprs[binop_arg as usize], Expr::Binop { op: _, lhs: _, rhs: _ });
+        assert_matches!(
+            parser.exprs[binop_arg as usize],
+            Expr::Binop {
+                op: _,
+                lhs: _,
+                rhs: _
+            }
+        );
+    }
+
+    #[test]
+    fn fun_call_arg_expr_types() {
+        let contents = "(foo (+ 1 1) 2)";
+        let parser = parse(contents).expect("parser error");
+        let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
+        let &[binop_arg, const_arg] = parser.fun_args_slice(args) else {
+            unreachable!();
+        };
+        let_assert_matches!(
+            parser.exprs[binop_arg as usize],
+            Expr::Binop { op: _, lhs, rhs }
+        );
+        assert_eq!(parser.types[const_arg as usize], ast::Type::UInt64);
+        assert_eq!(parser.types[lhs], ast::Type::UInt64);
+        assert_eq!(parser.types[rhs], ast::Type::UInt64);
     }
 
     #[test]
@@ -845,5 +916,4 @@ pub mod tests {
         "#;
         let parser = parse(contents).expect("parser error");
     }
-
 }
