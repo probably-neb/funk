@@ -254,7 +254,6 @@ impl<'a> Parser<'a> {
         let args = self.fun_call_args()?;
         self.exprs[call] = Expr::FunCall { name, args };
         eat!(self, Token::RParen, "end of fun call").with_context(|| {
-            print_tree(self);
             "fun call err"
         })?;
         return Ok(call);
@@ -318,7 +317,6 @@ impl<'a> Parser<'a> {
         let args = self.fun_args()?;
         let body = self.expr().context("expected function body")??;
         eat!(self, Token::RParen, "fun").with_context(|| {
-            print_tree(self);
             return "fun err";
         })?;
         self.exprs[fun_i] = Expr::FunDef { name, args, body };
@@ -418,137 +416,6 @@ impl From<Token> for Binop {
             Token::GtEq => Binop::GtEq,
             _ => unreachable!("invalid binop: {:?}", value),
         }
-    }
-}
-
-use std::cell::RefCell;
-use std::rc::Rc;
-
-#[derive(Debug)]
-struct TreeNode<T: std::fmt::Display> {
-    data: T,
-    children: Vec<Rc<RefCell<TreeNode<T>>>>,
-}
-
-impl<T: std::fmt::Display> TreeNode<T> {
-    // Create a new tree node
-    fn new(data: T) -> Self {
-        TreeNode {
-            data,
-            children: vec![],
-        }
-    }
-
-    // Add a child node directly to this node
-    fn add_node(&mut self, data: TreeNode<T>) {
-        self.children.push(Rc::new(RefCell::new(data)));
-    }
-
-    // Print the tree
-    fn print(&self, prefix: String, is_last: bool) {
-        println!(
-            "{}{}{}",
-            prefix,
-            if is_last { "└─ " } else { "├─ " },
-            self.data
-        );
-        let new_prefix = if is_last { "    " } else { "|   " };
-
-        let children = &self.children;
-        let last_index = children.len().saturating_sub(1);
-
-        for (index, child) in children.iter().enumerate() {
-            TreeNode::print(
-                &child.borrow(),
-                format!("{}{}", prefix, new_prefix),
-                index == last_index,
-            );
-        }
-    }
-}
-
-fn print_tree(parser: &Parser<'_>) {
-    let tree = into_tree(parser);
-    tree.print("".to_string(), false);
-}
-
-fn into_tree(parser: &Parser<'_>) -> TreeNode<String> {
-    let mut visited = vec![false; parser.exprs.len()];
-    let mut root = TreeNode::new("Root".to_string());
-    for (i, expr) in parser.exprs.iter().enumerate() {
-        if !visited[i] {
-            let node = expr_into_treenode(expr.clone(), parser, &mut visited);
-            root.add_node(node);
-        }
-    }
-    return root;
-}
-
-fn expr_into_treenode(expr: Expr, parser: &Parser<'_>, visited: &mut [bool]) -> TreeNode<String> {
-    let data = repr_expr(expr, parser);
-    let mut node = TreeNode::new(data);
-    macro_rules! visit {
-        ($node:ident, $i:expr) => {
-            visited[$i] = true;
-            let child = expr_into_treenode(parser.exprs[$i], parser, visited);
-            $node.add_node(child);
-        };
-        ($i:expr) => {
-            visit!(node, $i);
-        };
-    }
-    use Expr::*;
-    match expr {
-        Nop | Int(_) | String(_) | Ident(_) => {}
-        FunCall { args, .. } => {
-            let names: Vec<&str> = parser.fun_arg_names_iter(args).collect();
-            node.add_node(TreeNode::new(format!("args: [{}]", names.join(", "))));
-        }
-        If {
-            cond,
-            branch_true,
-            branch_false,
-        } => {
-            visit!(cond);
-            visit!(branch_true);
-            visit!(branch_false);
-        }
-        Binop { lhs, rhs, .. } => {
-            visit!(lhs);
-            visit!(rhs);
-        }
-        FunDef { args, body, .. } => {
-            let mut arg_node = TreeNode::new("Args".to_string());
-            for arg_i in parser.fun_args_slice(args) {
-                let arg = expr_into_treenode(expr, parser, visited);
-                arg_node.add_node(arg);
-                visited[*arg_i as usize] = true;
-            }
-            node.add_node(arg_node);
-
-            visit!(body);
-        }
-        Bind { name, value } => {
-            let name = expr_into_treenode(parser.exprs[name], parser, visited);
-            let value = expr_into_treenode(parser.exprs[value], parser, visited);
-            node.add_node(name);
-            node.add_node(value);
-        }
-    }
-    return node;
-}
-
-fn repr_expr(expr: Expr, parser: &Parser<'_>) -> String {
-    match expr {
-        Expr::Nop => "Nop".to_string(),
-        Expr::Int(i) => format!("Int {}", parser.data.get::<u64>(i)),
-        Expr::Binop { op, .. } => format!("{:?}", op),
-        Expr::If { .. } => "If".to_string(),
-        Expr::FunDef { name, .. } => format!("Fun {:?}", parser.get_ident(name)),
-        Expr::FunCall { name, .. } => format!("Call {:?}", parser.get_ident(name)),
-        Expr::Ident(i) => format!("Ident {:?}", parser.get_ident(i)),
-        Expr::String(i) => format!("Str \"{:?}\"", parser.get_ident(i)),
-        Expr::Bind { name, .. } => format!("let {:?}", parser.get_ident(name)),
     }
 }
 

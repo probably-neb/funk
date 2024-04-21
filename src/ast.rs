@@ -1,3 +1,5 @@
+pub mod stringify;
+
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
@@ -19,6 +21,11 @@ impl Ast {
 
     pub fn get_const<T: ReadFromBytes>(&self, i: DIndex) -> T {
         return self.data.get::<T>(i);
+    }
+
+    #[allow(unused)]
+    fn get_ident<'s>(&'s self, i: usize) -> &'s str {
+        return self.data.get_ref::<str>(i);
     }
 
     #[allow(unused)]
