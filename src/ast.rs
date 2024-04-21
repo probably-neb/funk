@@ -1,22 +1,26 @@
 pub mod stringify;
+pub mod typecheck;
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
 };
 
-// TODO: move XIndex def here
 use crate::parser::{self, XIndex};
+// TODO: move XIndex, Expr, Binop here
+// TODO: rename Expr to Node
+pub use parser::{EIndex, Expr, Binop};
 
 pub struct Ast {
     pub exprs: Vec<parser::Expr>,
     pub data: DataPool,
-    pub extra: Extra
+    pub extra: Extra,
+    pub types: Vec<Type>,
 }
 
 impl Ast {
-    pub fn new(exprs: Vec<parser::Expr>, data: DataPool, extra: Extra) -> Self {
-        Self { exprs, data, extra}
+    pub fn new(exprs: Vec<parser::Expr>, data: DataPool, extra: Extra, types: Vec<Type>) -> Self {
+        Self { exprs, data, extra, types}
     }
 
     pub fn get_const<T: ReadFromBytes>(&self, i: DIndex) -> T {

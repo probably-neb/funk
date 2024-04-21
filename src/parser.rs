@@ -102,7 +102,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse(mut self) -> Result<crate::ast::Ast> {
         self._parse()?;
-        Ok(Ast::new(self.exprs, self.data, self.extra))
+        Ok(Ast::new(self.exprs, self.data, self.extra, self.types))
     }
 
     fn _parse(&mut self) -> Result<()> {
