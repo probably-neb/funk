@@ -16,11 +16,15 @@ pub struct Ast {
     pub data: DataPool,
     pub extra: Extra,
     pub types: Vec<Type>,
+    /// References to other nodes in the AST
+    /// Generated during name resolution in typecheck
+    pub refs: Vec<RefIdent>,
 }
 
 impl Ast {
     pub fn new(exprs: Vec<parser::Expr>, data: DataPool, extra: Extra, types: Vec<Type>) -> Self {
-        Self { exprs, data, extra, types}
+        let num_exprs = exprs.len();
+        Self { exprs, data, extra, types, refs: vec![None; num_exprs]}
     }
 
     pub fn get_const<T: ReadFromBytes>(&self, i: DIndex) -> T {
@@ -56,6 +60,9 @@ impl Ast {
         return self.fun_args_slice(i).iter().map(|a| self.data.get_ref::<str>(*a as usize));
     }
 
+    pub fn print(&self) {
+        stringify::print_tree(self);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +70,10 @@ pub enum Type {
     Unknown,
     UInt64,
     String,
+    Bool,
 }
+
+pub type RefIdent = Option<EIndex>;
 
 // Wraps a HashMap<u64, DIndex> to use byte slices as keys
 // by hashing the byte slice and using the resulting u64
@@ -253,6 +263,9 @@ impl Extra {
         let i = self.append(len);
         self.data.extend_from_slice(data);
         return i;
+    }
+    pub fn fun_args_slice(&self, i: XIndex) -> &[u32] {
+        return self.get::<ExtraFunArgs>(i).args;
     }
 }
 

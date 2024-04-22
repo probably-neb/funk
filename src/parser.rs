@@ -46,6 +46,9 @@ pub enum Expr {
         args: XIndex,
         body: EIndex,
     },
+    FunArg,
+    BlockEnd,
+    FunEnd,
     FunCall {
         name: DIndex,
         args: XIndex,
@@ -297,9 +300,15 @@ impl<'a> Parser<'a> {
     fn if_expr(&mut self) -> Result<EIndex> {
         let if_i = self.reserve();
         let cond = self.expr().unwrap()?;
+
         let branch_true = self.expr().unwrap()?;
+        self.push(Expr::BlockEnd);
+
         let branch_false = self.expr().unwrap()?;
+        self.push(Expr::BlockEnd);
+
         eat!(self, Token::RParen, "if")?;
+
         self.exprs[if_i] = Expr::If {
             cond,
             branch_true,
@@ -320,6 +329,7 @@ impl<'a> Parser<'a> {
             return "fun err";
         })?;
         self.exprs[fun_i] = Expr::FunDef { name, args, body };
+        self.push(Expr::FunEnd);
         Ok(fun_i)
     }
 
@@ -341,6 +351,7 @@ impl<'a> Parser<'a> {
         };
         let first_name = self.intern_str(first_range);
         self.extra.append(first_name as u32);
+        self.push(Expr::FunArg);
 
         let mut num = 1;
 
@@ -348,6 +359,7 @@ impl<'a> Parser<'a> {
             num += 1;
             let name = self.intern_str(range);
             self.extra.append(name as u32);
+            self.push(Expr::FunArg);
         }
 
         self.extra[extra_args_len] = num;

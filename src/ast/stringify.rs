@@ -7,14 +7,17 @@ use crate::parser::Expr;
 
 pub fn print_tree(ast: &Ast) {
     let tree = into_tree(ast);
-    tree.print("".to_string(), false);
+    for (i, child) in tree.children.iter().enumerate() {
+        let is_last = i == tree.children.len() - 1;
+        child.borrow().print("".to_string(), is_last);
+    }
 }
 
 fn into_tree(ast: &Ast) -> TreeNode<String> {
-    let mut visited = vec![false; ast.exprs.len()];
+    let mut visited = 0;
     let mut root = TreeNode::new("Root".to_string());
     for (i, expr) in ast.exprs.iter().enumerate() {
-        if visited[i] {
+        if i < visited {
             continue;
         }
         let node = expr_into_treenode(expr.clone(), ast, &mut visited);
@@ -67,12 +70,15 @@ impl<T: std::fmt::Display> TreeNode<T> {
 }
 
 
-fn expr_into_treenode(expr: Expr, ast: &Ast, visited: &mut [bool]) -> TreeNode<String> {
+fn expr_into_treenode(expr: Expr, ast: &Ast, visited: &mut usize) -> TreeNode<String> {
+    if expr == Expr::BlockEnd {
+        return TreeNode::new("BlockEnd".to_string());
+    }
     let data = repr_expr(expr, ast);
     let mut node = TreeNode::new(data);
     macro_rules! visit {
         ($node:ident, $i:expr) => {
-            visited[$i] = true;
+            mark_visited(visited, $i);
             let child = expr_into_treenode(ast.exprs[$i], ast, visited);
             $node.add_node(child);
         };
@@ -82,25 +88,51 @@ fn expr_into_treenode(expr: Expr, ast: &Ast, visited: &mut [bool]) -> TreeNode<S
     }
     use Expr::*;
     match expr {
-        Nop | Int(_) | String(_) | Ident(_) => {}
-        FunCall { args, .. } => {
+        Expr::Nop | Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => {
+        }
+        Expr::FunCall { args, .. } => {
             let names: Vec<&str> = ast.fun_arg_names_iter(args).collect();
             node.add_node(TreeNode::new(format!("args: [{}]", names.join(", "))));
         }
-        If {
+        Expr::If {
             cond,
             branch_true,
             branch_false,
         } => {
-            visit!(cond);
-            visit!(branch_true);
-            visit!(branch_false);
+            let cond_node = expr_into_treenode(ast.exprs[cond], ast, visited);
+            node.add_node(cond_node);
+            mark_visited(visited, cond);
+
+            let mut true_node = TreeNode::new("Then".to_string());
+            let mut i = branch_true;
+            while ast.exprs[i] != Expr::BlockEnd {
+                let expr_node = expr_into_treenode(ast.exprs[i], ast, visited);
+                true_node.add_node(expr_node);
+                i = usize::max(i + 1,*visited);
+            }
+            node.add_node(true_node);
+            mark_visited(visited, i);
+
+            let mut false_node = TreeNode::new("Else".to_string());
+            i = branch_false;
+            while ast.exprs[i] != Expr::BlockEnd {
+                let expr_node = expr_into_treenode(ast.exprs[i], ast, visited);
+                false_node.add_node(expr_node);
+                i = usize::max(i + 1,*visited);
+            }
+            node.add_node(false_node);
+            mark_visited(visited, i);
         }
-        Binop { lhs, rhs, .. } => {
-            visit!(lhs);
-            visit!(rhs);
+        Expr::Binop { lhs, rhs, .. } => {
+            let lhs_node = expr_into_treenode(ast.exprs[lhs], ast, visited);
+            mark_visited(visited, lhs);
+            node.add_node(lhs_node);
+
+            let rhs_node = expr_into_treenode(ast.exprs[rhs], ast, visited);
+            mark_visited(visited, rhs);
+            node.add_node(rhs_node);
         }
-        FunDef { args, body, .. } => {
+        Expr::FunDef { args, body, .. } => {
             let mut arg_node = TreeNode::new("Args".to_string());
             for arg_i in ast.fun_args_slice(args) {
                 let arg = TreeNode::new(ast.get_ident(*arg_i as usize).to_string());
@@ -108,14 +140,27 @@ fn expr_into_treenode(expr: Expr, ast: &Ast, visited: &mut [bool]) -> TreeNode<S
             }
             node.add_node(arg_node);
 
-            visit!(body);
+            // visiting body will skip the empty funarg nodes
+            let mut body_node = TreeNode::new("Body".to_string());
+            let mut i = body;
+            while ast.exprs[i] != Expr::FunEnd {
+                assert_ne!(ast.exprs[i], Expr::FunArg);
+                let body_expr_node = expr_into_treenode(ast.exprs[i], ast, visited);
+                body_node.add_node(body_expr_node);
+                i = usize::max(i + 1,*visited);
+            }
+            mark_visited(visited, i + 1);
+            node.add_node(body_node);
         }
-        Bind { name, value } => {
+        Expr::Bind { name, value } => {
             let name = expr_into_treenode(ast.exprs[name], ast, visited);
             let value = expr_into_treenode(ast.exprs[value], ast, visited);
             node.add_node(name);
             node.add_node(value);
         }
+        Expr::FunArg => unreachable!("fun arg"),
+        Expr::BlockEnd => {},
+        Expr::FunEnd => eprintln!("fun end"), // unreachable!("fun end"),
     }
     return node;
 }
@@ -126,10 +171,18 @@ fn repr_expr(expr: Expr, ast: &Ast) -> String {
         Expr::Int(i) => format!("Int {}", ast.data.get::<u64>(i)),
         Expr::Binop { op, .. } => format!("{:?}", op),
         Expr::If { .. } => "If".to_string(),
-        Expr::FunDef { name, .. } => format!("Fun {:?}", ast.get_ident(name)),
-        Expr::FunCall { name, .. } => format!("Call {:?}", ast.get_ident(name)),
-        Expr::Ident(i) => format!("Ident {:?}", ast.get_ident(i)),
-        Expr::String(i) => format!("Str \"{:?}\"", ast.get_ident(i)),
-        Expr::Bind { name, .. } => format!("let {:?}", ast.get_ident(name)),
+        Expr::FunDef { name, .. } => format!("Fun {}", ast.get_ident(name)),
+        Expr::FunCall { name, .. } => format!("Call {}", ast.get_ident(name)),
+        Expr::Ident(i) => format!("Ident {}", ast.get_ident(i)),
+        Expr::String(i) => format!("Str \"{}\"", ast.get_ident(i)),
+        Expr::Bind { name, .. } => format!("let {}", ast.get_ident(name)),
+        Expr::FunArg => unreachable!("tried to format fun arg"),
+        Expr::BlockEnd => unreachable!("tried to format block end"),
+        Expr::FunEnd => "FUNEND??".to_string(), // unreachable!("tried to format fun end"),
     }
+}
+
+
+fn mark_visited(cursor: &mut usize, i: usize) {
+    *cursor = usize::max(*cursor, i + 1);
 }
