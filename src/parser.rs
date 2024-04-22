@@ -324,11 +324,13 @@ impl<'a> Parser<'a> {
         };
         let name = self.intern_str(range);
         let args = self.fun_args()?;
+        let ret_ty = self.try_parse_type_annotation()?;
         let body = self.expr().context("expected function body")??;
         eat!(self, Token::RParen, "fun").with_context(|| {
             return "fun err";
         })?;
         self.exprs[fun_i] = Expr::FunDef { name, args, body };
+        self.types[fun_i] = ret_ty;
         self.push(Expr::FunEnd);
         Ok(fun_i)
     }
@@ -351,7 +353,8 @@ impl<'a> Parser<'a> {
         };
         let first_name = self.intern_str(first_range);
         self.extra.append(first_name as u32);
-        self.push(Expr::FunArg);
+        let first_arg_type = self.try_parse_type_annotation()?;
+        self.push_typed(Expr::FunArg, first_arg_type);
 
         let mut num = 1;
 
@@ -359,7 +362,8 @@ impl<'a> Parser<'a> {
             num += 1;
             let name = self.intern_str(range);
             self.extra.append(name as u32);
-            self.push(Expr::FunArg);
+            let arg_type = self.try_parse_type_annotation()?;
+            self.push_typed(Expr::FunArg, arg_type);
         }
 
         self.extra[extra_args_len] = num;
@@ -370,13 +374,36 @@ impl<'a> Parser<'a> {
     fn bind_expr(&mut self) -> Result<EIndex> {
         let bind_i = self.reserve();
         let Token::Ident(range) = eat!(self, Token::Ident(_))? else {
-            unreachable!()
+            anyhow::bail!("expected ident in bind expr");
         };
+        let bound_type = self.try_parse_type_annotation()?;
         let name = self.intern_str(range);
+
         let value = self.expr().expect("no value in bind expr")?;
         eat!(self, Token::RParen)?;
+
         self.exprs[bind_i] = Expr::Bind { name, value };
+        self.types[bind_i] = bound_type;
         Ok(bind_i)
+    }
+
+    fn try_parse_type_annotation(&mut self) -> Result<ast::Type> {
+        let Some(Token::Colon) = self.peek_tok() else {
+            return Ok(ast::Type::Unknown);
+        };
+        eat!(self, Token::Colon)?;
+        let Some(Token::Ident(range)) = self.tok() else {
+            let cur_token = self.tokens[self.tok_i];
+            anyhow::bail!("expected type annotation got {:?}", cur_token);
+        };
+        let type_name = self.lxr.slice(&range);
+        return Ok(match type_name {
+            b"int" => ast::Type::UInt64,
+            b"str" => ast::Type::String,
+            b"bool" => ast::Type::Bool,
+            _ => anyhow::bail!("unknown type {:?}", type_name),
+        });
+        
     }
 
     #[allow(unused)]
@@ -801,6 +828,30 @@ pub mod tests {
         let contents = r#"(fun echo (a) a)"#;
         let parser = parse(contents).expect("parser error");
         assert_matches!(parser.exprs[0], Expr::FunDef {name: _, args: _, body: _});
-        assert_matches!(parser.exprs[1], Expr::Ident(_));
+        assert_matches!(parser.exprs[1], Expr::FunArg);
+        assert_matches!(parser.exprs[2], Expr::Ident(_));
+    }
+
+    #[test]
+    fn fun_type_annotations() {
+        let contents = "(fun foo (a: int b: int): int (+ a b))";
+        let parser = parse(contents).expect("parser error");
+
+        assert_matches!(parser.exprs[0], Expr::FunDef {name: _, args: _, body: _});
+        assert_eq!(parser.types[0], ast::Type::UInt64);
+
+        assert_eq!(parser.exprs[1], Expr::FunArg);
+        assert_eq!(parser.types[1], ast::Type::UInt64);
+
+        assert_eq!(parser.exprs[2], Expr::FunArg);
+        assert_eq!(parser.types[2], ast::Type::UInt64);
+    }
+
+    #[test]
+    fn bind_type_annotations() {
+        let contents = "(let a: int 1)";
+        let parser = parse(contents).expect("parser error");
+        assert_matches!(parser.exprs[0], Expr::Bind {name: _, value: _});
+        assert_eq!(parser.types[0], ast::Type::UInt64);
     }
 }

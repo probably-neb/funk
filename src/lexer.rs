@@ -32,6 +32,7 @@ pub enum Token {
     If,
     Fun,
     Let,
+    Colon,
 }
 
 pub struct Lexer<'a> {
@@ -213,6 +214,7 @@ impl<'a> Lexer<'a> {
             b'+' => Token::Plus,
             b'*' => Token::Mul,
             b'/' => Token::Div,
+            b':' => Token::Colon,
             _ => unreachable!("unrecognized punct {}", self.ch as char),
         }
     }
@@ -233,6 +235,27 @@ impl<'a> Lexer<'a> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    macro_rules! assert_matches {
+        ($expr:expr, $pat:pat) => {
+            assert!(
+                matches!($expr, $pat),
+                "expected {:?}, got {:?}",
+                stringify!($pat),
+                $expr
+            )
+        };
+        ($expr:expr, $pat:pat, $message:literal) => {
+            assert!(matches!($expr, $pat), $message)
+        };
+        ($expr:expr, $pat:pat => $body:expr) => {{
+            assert_matches!($expr, $pat);
+            match $expr {
+                $pat => $body,
+                _ => unreachable!("unreachable pattern"),
+            }
+        }};
+    }
 
     #[test]
     fn int() {
@@ -372,5 +395,26 @@ pub mod tests {
         let contents = "let";
         let mut lex = Lexer::new(contents);
         assert_eq!(lex.next_token().unwrap(), Token::Let);
+    }
+
+    #[test]
+    fn type_annotations() {
+        let contents = "(fun (a: int b: int): int (+ a b))";
+        let mut lex = Lexer::new(contents);
+        assert_eq!(lex.next_token().unwrap(), Token::LParen);
+        assert_eq!(lex.next_token().unwrap(), Token::Fun);
+        assert_eq!(lex.next_token().unwrap(), Token::LParen);
+
+        assert_matches!(lex.next_token().unwrap(), Token::Ident(_));
+        assert_eq!(lex.next_token().unwrap(), Token::Colon);
+        assert_matches!(lex.next_token().unwrap(), Token::Ident(_));
+
+        assert_matches!(lex.next_token().unwrap(), Token::Ident(_));
+        assert_eq!(lex.next_token().unwrap(), Token::Colon);
+        assert_matches!(lex.next_token().unwrap(), Token::Ident(_));
+
+        assert_eq!(lex.next_token().unwrap(), Token::RParen);
+        assert_eq!(lex.next_token().unwrap(), Token::Colon);
+        assert_matches!(lex.next_token().unwrap(), Token::Ident(_));
     }
 }
