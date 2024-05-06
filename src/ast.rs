@@ -68,6 +68,7 @@ impl Ast {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Unknown,
+    Void,
     UInt64,
     String,
     Bool,

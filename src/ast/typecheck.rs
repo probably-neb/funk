@@ -23,12 +23,15 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
         // TODO: switch to check for statements,
         // call check_expr in else branch
         match expr {
-            Nop => anyhow::bail!("nop has no type"),
-            Int(_) | String(_) | Ident(_) => anyhow::bail!("top level literal not valid. malformed AST"),
-            Binop { op, lhs, rhs } => {
+            Expr::Nop => anyhow::bail!("nop has no type"),
+            Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => anyhow::bail!("top level literal not valid. malformed AST"),
+            Expr::Binop { op, lhs, rhs } => {
                 check_binop(&exprs, types, refs, &mut i, expr_i, op, lhs, rhs)?;
             }
-            FunDef { name, args, body } => {
+            Expr::FunDef { name, args, body } => {
+                let fun_i = i;
+                mod_scopes.functions.bind(name, fun_i);
+
                 i+=1;
                 for &arg in extra.fun_args_slice(args) {
                     assert!(exprs[i] == FunArg, "expected fun arg");
@@ -36,15 +39,24 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                     i+=1;
                 }
                 assert_eq!(i, body);
-                check_block(exprs, types, refs, extra, &mut i, &mut mod_scopes, &mut local_scopes)?;
+                let res_type = check_block(exprs, types, refs, extra, &mut i, &mut mod_scopes, &mut local_scopes)?;
                 local_scopes.clear();
+                let ret_type = &mut types[fun_i];
+                if *ret_type == Type::Unknown {
+                    *ret_type = res_type;
+                }
+                if res_type != types[fun_i] {
+                    anyhow::bail!("function return type does not match actual return type");
+                }
             },
-            If { .. } => todo!("if"),
-            Bind { .. } => todo!("bind"),
-            FunCall { .. } => todo!("fun call"),
-            FunArg => anyhow::bail!("expected top level node found fun arg"),
-            BlockEnd => unreachable!("block end"),
-            FunEnd => unreachable!("fun end"),
+            Expr::If { .. } => todo!("if"),
+            Expr::Bind { .. } => todo!("bind"),
+            Expr::FunCall { .. } => {
+
+            },
+            Expr::FunArg => anyhow::bail!("expected top level node found fun arg"),
+            Expr::BlockEnd => unreachable!("block end"),
+            Expr::FunEnd => unreachable!("fun end"),
         }
         i += 1;
     }
@@ -59,7 +71,11 @@ fn check_block(
     cursor: &mut usize,
     module_scopes: &mut ModuleScopes,
     local_scopes: &mut ScopeStack,
-) -> Result<()> {
+) -> Result<Type> {
+    let mut ret_type = Type::Unknown;
+    local_scopes.start_subscope();
+    
+
     while exprs[*cursor] != BlockEnd && exprs[*cursor] != FunEnd {
         let expr_i = *cursor;
         let expr = exprs[expr_i];
@@ -68,16 +84,41 @@ fn check_block(
         // call check_expr in else branch
         match expr {
             Expr::Nop => anyhow::bail!("nop has no type"),
-            Expr::Int(_) | Expr::String(_) => {
+            Expr::Int(_) => {
+                assert_eq!(types[expr_i], Type::UInt64);
+                // FIXME: check type conflicts
+                ret_type = Type::UInt64;
+            },
+            Expr::String(_) => {
+                assert_eq!(types[expr_i], Type::String);
+                // FIXME: check type conflicts
+                ret_type = Type::String;
             },
             Expr::Ident(name) => {
                 // TODO: implicit returns?
-                local_scopes.get(name).context("unbound identifier")?;
+                let ref_i = local_scopes.get(name).with_context(||
+                    // FIXME: need way to get name from DIndex here
+                    format!("unbound identifier: {:?}", name)
+                )?;
+                ret_type = types[ref_i];
             },
             Expr::Binop { op, lhs, rhs } => {
                 check_binop(&exprs, types, refs, cursor, expr_i, op, lhs, rhs)?;
             }
-            Expr::If { .. } => todo!("if"),
+            Expr::If { cond, branch_true, branch_false } => {
+                let Type::Bool = check_expr(exprs, types, refs, cursor, cond)? else {
+                    anyhow::bail!("expected bool in if condition");
+                };
+
+                let branch_true_type = check_block(exprs, types, refs, extra, cursor, module_scopes, local_scopes)?;
+                let branch_false_type = check_block(exprs, types, refs, extra, cursor, module_scopes, local_scopes)?;
+
+                if branch_true_type != branch_false_type {
+                    anyhow::bail!("mismatched types in if branches");
+                }
+
+                ret_type = branch_true_type;
+            },
             Expr::Bind { .. } => todo!("bind"),
             Expr::FunCall { .. } => todo!("fun call"),
             Expr::FunArg => anyhow::bail!("expected block level node found fun arg"),
@@ -91,7 +132,11 @@ fn check_block(
         }
     }
     *cursor += 1;
-    Ok(())
+    if ret_type == Type::Unknown {
+        ret_type = Type::Void;
+    }
+    local_scopes.end_subscope();
+    return Ok(ret_type);
 }
 
 fn check_expr(
@@ -265,6 +310,7 @@ pub mod tests {
             {
                 let mut ast = parse($src).expect("parser error");
                 ast.print();
+                dbg!(&ast.exprs);
                 let res = super::typecheck(&mut ast);
                 assert!(res.is_err());
                 ast
@@ -307,6 +353,11 @@ pub mod tests {
         // but this isn't right! Should make `assert_rejects_with` as well as typecheck error union
         // type and check that error matches pattern
         assert_rejects!(r#"(fun foo () 1) (fun bar () "str") (== (foo) (bar))"#);
+    }
+
+    #[test]
+    fn wrong_return_type() {
+        assert_rejects!("(fun foo ():str 1)");
     }
 
     #[test]
