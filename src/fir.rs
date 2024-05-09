@@ -163,6 +163,11 @@ impl FIRGen {
         return i - self.scopes.cur;
     }
 
+    fn next_expr(&mut self) -> Expr {
+        self.cursor += 1;
+        return self.ast.exprs[self.cursor];
+    }
+
     fn mark_visited(&mut self, cursor: usize) {
         if cursor <= self.cursor {
             return;
@@ -241,6 +246,9 @@ impl FIRGen {
                 let res = self.gen_expr(body)?;
                 self.push(Op::Ret(Ref::Inst(res as u32)));
                 self.push(Op::FunEnd);
+                if !matches!(self.next_expr(), Expr::FunEnd) {
+                    unreachable!("expected FunEnd, got {:?}", self.ast.exprs[self.cursor]);
+                }
                 self.scopes.end();
                 return Ok(fun_def_i);
             }
@@ -280,12 +288,18 @@ impl FIRGen {
 
                 let true_i = self.begin_basic_block();
                 let true_res_i = self.gen_expr(branch_true)?;
+                if !matches!(self.next_expr(), Expr::BlockEnd) {
+                    unreachable!("expected End, got {:?}", self.ast.exprs[self.cursor]);
+                }
                 let true_end_i = self.reserve();
                 let true_ref = Ref::Inst(true_i as u32);
                 let true_res_ref = Ref::Inst(true_res_i as u32);
 
                 let false_i = self.begin_basic_block();
                 let false_res_i = self.gen_expr(branch_false)?;
+                if !matches!(self.next_expr(), Expr::BlockEnd) {
+                    unreachable!("expected End, got {:?}", self.ast.exprs[self.cursor]);
+                }
                 let false_end_i = self.reserve();
                 let false_ref = Ref::Inst(false_i as u32);
                 let false_res_ref = Ref::Inst(false_res_i as u32);

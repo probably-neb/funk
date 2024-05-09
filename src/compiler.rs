@@ -231,14 +231,26 @@ impl Compiler {
         self.bind_fun_args(args);
         self.scope_stack.skip::<2>();
         self.compile_expr(body);
+        let Some(Expr::FunEnd) = self.next_expr() else {
+            unreachable!("expected fun end");
+        };
         self.emit(ByteCode::Ret);
         self.end_jmp(start);
         self.scope_stack.end();
     }
 
     fn bind_fun_args(&mut self, args_start: usize) {
-        for &arg_name in self.ast.fun_args_slice(args_start) {
+        let ast = &self.ast;
+        let fun_args = ast.fun_args_slice(args_start);
+        let num_args = fun_args.len();
+        for &arg_name in fun_args {
             self.scope_stack.bind_local(arg_name as DIndex);
+        }
+        // separated because rust
+        for _ in 0..num_args {
+            let Some(Expr::FunArg) = self.next_expr() else {
+                unreachable!("expected fun arg");
+            };
         }
     }
 
