@@ -1,8 +1,11 @@
 watch *ARGS:
-    ls --color=never ./src/**.rs ./src/**/*.rs | entr -rc cargo test --tests {{ARGS}}
+    ls --color=never ./src/**.rs ./src/**/*.rs | entr -rc just test {{ARGS}}
 
 watch-trace *ARGS:
-    ls --color=never ./src/**.rs ./src/**/*.rs | RUST_BACKTRACE=1 entr -rc cargo test --tests {{ARGS}}
+    ls --color=never ./src/**.rs ./src/**/*.rs | RUST_BACKTRACE=1 entr -rc just test {{ARGS}}
+
+test *ARGS:
+    cargo test --tests {{ARGS}}
 
 cg-annotate *ARGS:
     #!/usr/bin/bash
