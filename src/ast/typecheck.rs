@@ -18,10 +18,14 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
         let expr_i = i;
         let expr = ast.exprs[expr_i];
 
-        let types = &mut ast.types;
-        let exprs = &ast.exprs;
-        let refs = &mut ast.refs;
-        let extra = &ast.extra;
+        let ctx = Ctx {
+            exprs: &ast.exprs,
+            types: &mut ast.types,
+            refs: &mut ast.refs,
+            extra: &ast.extra,
+            cursor: &mut i,
+            scopes: &mut scopes,
+        };
 
         // TODO: switch to check for statements,
         // call check_expr in else branch
@@ -32,39 +36,24 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
             }
             Expr::Binop { op, lhs, rhs } => {
                 check_binop(
-                    &exprs,
-                    types,
-                    extra,
-                    &scopes,
-                    refs,
-                    &mut i,
-                    expr_i,
-                    op,
-                    lhs,
-                    rhs,
+                    &ctx, op, lhs, rhs,
                 )?;
             }
             Expr::FunDef { name, args, body } => {
-                let fun_i = i;
+                let Ctx { exprs, types, extra, cursor: i, scopes, .. } = ctx.clone();
+                let fun_i = *i;
                 scopes.module.functions.bind(name, fun_i);
 
-                i += 1;
+                *i += 1;
                 for &arg in extra.fun_args_slice(args) {
-                    assert!(exprs[i] == FunArg, "expected fun arg");
-                    scopes.locals.bind(arg as usize, i);
-                    i += 1;
-                    types[i] = Type::Unknown;
+                    assert!(exprs[*i] == FunArg, "expected fun arg");
+                    scopes.locals.bind(arg as usize, *i);
+                    *i += 1;
+                    types[*i] = Type::Unknown;
                 }
-                assert_eq!(i, body.start_i());
-                let res_type = check_block(
-                    exprs,
-                    types,
-                    refs,
-                    extra,
-                    &mut i,
-                    &mut scopes,
-                    body.end_i(),
-                )?;
+                assert_eq!(*i, body.start_i());
+                let res_type =
+                    check_block(&ctx, body.end_i())?;
                 scopes.locals.clear();
                 let ret_type = &mut types[fun_i];
                 if *ret_type == Type::Unknown {
@@ -76,7 +65,7 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
             Expr::If { .. } => todo!("if"),
             Expr::Bind { .. } => todo!("bind"),
             Expr::FunCall { name, args } => {
-                check_funcall(exprs, types, extra, &scopes, refs, &mut i, name, args)?;
+                check_funcall(&ctx, name, args)?;
             }
             Expr::FunArg => anyhow::bail!("expected top level node found fun arg"),
         }
@@ -86,17 +75,13 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
 }
 
 fn check_block(
-    exprs: &[Expr],
-    types: &mut [Type],
-    refs: &mut [RefIdent],
-    extra: &Extra,
-    cursor: &mut usize,
-    scopes: &mut Scopes,
+    ctx: &Ctx<'_>,
     until: usize,
 ) -> Result<Type> {
-    let mut ret_type = Type::Unknown;
+    let Ctx { exprs, types, cursor, scopes, ..} = ctx.clone();
     scopes.locals.start_subscope();
 
+    let mut ret_type = Type::Unknown;
     while *cursor < until {
         let expr_i = *cursor;
         let expr = exprs[expr_i];
@@ -124,16 +109,7 @@ fn check_block(
             }
             Expr::Binop { op, lhs, rhs } => {
                 check_binop(
-                    exprs,
-                    types,
-                    extra,
-                    scopes,
-                    refs,
-                    cursor,
-                    expr_i,
-                    op,
-                    lhs,
-                    rhs,
+                    ctx, op, lhs, rhs,
                 )?;
             }
             Expr::If {
@@ -141,28 +117,17 @@ fn check_block(
                 branch_true,
                 branch_false,
             } => {
-                let Type::Bool =
-                    check_expr(exprs, types, extra, scopes, refs, cursor, cond)?
+                let Type::Bool = check_expr(ctx, cond)?
                 else {
                     anyhow::bail!("expected bool in if condition");
                 };
 
                 let branch_true_type = check_block(
-                    exprs,
-                    types,
-                    refs,
-                    extra,
-                    cursor,
-                    scopes ,
+                    ctx,
                     branch_true.end_i(),
                 )?;
                 let branch_false_type = check_block(
-                    exprs,
-                    types,
-                    refs,
-                    extra,
-                    cursor,
-                    scopes,
+                    ctx,
                     branch_false.end_i(),
                 )?;
 
@@ -174,8 +139,7 @@ fn check_block(
             }
             Expr::Bind { .. } => todo!("bind"),
             Expr::FunCall { name, args } => {
-                ret_type =
-                    check_funcall(exprs, types, extra, scopes, refs, cursor, name, args)?;
+                ret_type = check_funcall(&ctx, name, args)?;
             }
             Expr::FunArg => anyhow::bail!("expected block level node found fun arg"),
             Expr::FunDef { .. } => anyhow::bail!("expected block level node found fun def"),
@@ -191,14 +155,10 @@ fn check_block(
 }
 
 fn check_expr(
-    exprs: &[Expr],
-    types: &mut [Type],
-    extra: &Extra,
-    scopes: &Scopes,
-    refs: &mut [RefIdent],
-    cursor: &mut usize,
+    ctx: &Ctx<'_>,
     expr_i: EIndex,
 ) -> Result<Type> {
+    let Ctx { exprs, types, cursor, ..} = ctx.clone();
     let expr = exprs[expr_i];
     match expr {
         Expr::Nop => anyhow::bail!("nop has no type"),
@@ -207,13 +167,13 @@ fn check_expr(
             Ok(types[expr_i])
         }
         Expr::Binop { op, lhs, rhs } => check_binop(
-            exprs, types, extra, scopes, refs, cursor, expr_i, op, lhs, rhs,
+            ctx, op, lhs, rhs,
         ),
         Expr::Bind { .. } => todo!("bind"),
         Expr::Ident(_) => todo!("name resolution"),
         Expr::If { .. } => todo!("if"),
         Expr::FunCall { name, args } => {
-            check_funcall(exprs, types, extra, scopes, refs, cursor, name, args)
+            check_funcall(ctx, name, args)
         }
         Expr::FunDef { .. } => todo!("fun def"),
         Expr::FunArg => anyhow::bail!("expected expr found fun arg"),
@@ -221,19 +181,15 @@ fn check_expr(
 }
 
 fn check_binop(
-    exprs: &[Expr],
-    types: &mut [Type],
-    extra: &Extra,
-    scopes: &Scopes,
-    refs: &mut [RefIdent],
-    cursor: &mut usize,
-    binop_i: EIndex,
+    ctx: &Ctx<'_>,
     op: ast::Binop,
     lhs_i: EIndex,
     rhs_i: EIndex,
 ) -> Result<Type> {
-    let lhs_type = check_expr(exprs, types, extra, scopes, refs, cursor, lhs_i)?;
-    let rhs_type = check_expr(exprs, types, extra, scopes, refs, cursor, rhs_i)?;
+    let Ctx { types, cursor, ..} = ctx.clone();
+    let binop_i = *cursor;
+    let lhs_type = check_expr(ctx, lhs_i)?;
+    let rhs_type = check_expr(ctx, rhs_i)?;
     if lhs_type != rhs_type {
         // TODO: better error message
         anyhow::bail!("mismatched types in binop");
@@ -254,22 +210,20 @@ fn check_binop(
 }
 
 fn check_funcall(
-    exprs: &[Expr],
-    types: &mut [Type],
-    extra: &Extra,
-    scopes: &Scopes,
-    refs: &mut [RefIdent],
-    cursor: &mut usize,
+    ctx: &Ctx<'_>,
     name: DIndex,
     args: EIndex,
 ) -> Result<Type> {
-    let fun_i = scopes.module
+    let Ctx { exprs, types, extra, cursor, scopes, ..} = ctx.clone();
+    let fun_i = scopes
+        .module
         .functions
         .get(name)
         .with_context(|| "ruh roh raggiy")?;
     let Expr::FunDef { args: params_i, .. } = exprs[fun_i] else {
         anyhow::bail!("expected fun def");
     };
+    mark_visited(cursor, fun_i);
     let num_params = {
         let num = extra.fun_num_args(params_i);
         num as usize
@@ -277,7 +231,7 @@ fn check_funcall(
     dbg!(num_params);
     let param_types_range = fun_i + 1..=(fun_i + num_params);
     for (&arg, param_type_i) in extra.fun_args_slice(args).iter().zip(param_types_range) {
-        let arg_type = check_expr(exprs, types, extra, scopes, refs, cursor, arg as usize)?;
+        let arg_type = check_expr(ctx, arg as usize)?;
         let param_type = types[param_type_i];
         dbg!(arg_type, param_type);
         if arg_type != param_type {
@@ -290,6 +244,28 @@ fn check_funcall(
 
 fn mark_visited(cursor: &mut usize, i: usize) {
     *cursor = usize::max(*cursor, i);
+}
+
+struct Ctx<'a> {
+    exprs: &'a [Expr],
+    types: &'a mut [Type],
+    refs: &'a mut [RefIdent],
+    extra: &'a Extra,
+    cursor: &'a mut usize,
+    scopes: &'a mut Scopes,
+}
+
+impl Clone for Ctx<'_> {
+    fn clone(&self) -> Self {
+        Self {
+            exprs: self.exprs,
+            types: unsafe { &mut *(self.types as *const [Type] as *mut [Type])},
+            refs: unsafe { &mut *(self.refs as *const [RefIdent] as *mut [RefIdent])},
+            extra: self.extra,
+            cursor: unsafe { &mut *(self.cursor as *const usize as *mut usize)},
+            scopes: unsafe { &mut *(self.scopes as *const Scopes as *mut Scopes)},
+        }
+    }
 }
 
 struct Scopes {
