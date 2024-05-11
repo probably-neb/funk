@@ -41,5 +41,5 @@ clean:
 dbg-test *ARGS:
     #!/usr/bin/bash
     exe=$(cargo test --message-format=json --no-run -v --tests {{ARGS}} -- --no-timeout | jq -r '. | select(.reason == "compiler-artifact" and .target.name == "funk") | .executable')
-    lldb "${exe}"
+    rust-lldb "${exe}"
 
