@@ -146,7 +146,6 @@ fn check_block(
         }
         *cursor += 1;
     }
-    *cursor += 1;
     if ret_type == Type::Unknown {
         ret_type = Type::Void;
     }
@@ -228,12 +227,10 @@ fn check_funcall(
         let num = extra.fun_num_args(params_i);
         num as usize
     };
-    dbg!(num_params);
     let param_types_range = fun_i + 1..=(fun_i + num_params);
     for (&arg, param_type_i) in extra.fun_args_slice(args).iter().zip(param_types_range) {
         let arg_type = check_expr(ctx, arg as usize)?;
         let param_type = types[param_type_i];
-        dbg!(arg_type, param_type);
         if arg_type != param_type {
             anyhow::bail!("mismatched types in function call");
         }
@@ -368,7 +365,7 @@ pub mod tests {
     macro_rules! assert_accepts {
         ($src:expr) => {{
             let mut ast = parse($src).expect("parser error");
-            // ast.print();
+            ast.print();
             let res = super::typecheck(&mut ast);
             assert!(res.is_ok(), "{}", res.unwrap_err());
             ast
@@ -378,8 +375,8 @@ pub mod tests {
     macro_rules! assert_rejects {
         ($src:expr) => {{
             let mut ast = parse($src).expect("parser error");
-            // ast.print();
-            dbg!(&ast.exprs);
+            ast.print();
+            // dbg!((0..).zip(&ast.exprs).collect::<Vec<_>>());
             let res = super::typecheck(&mut ast);
             assert!(res.is_err());
             ast

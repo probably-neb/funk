@@ -856,4 +856,20 @@ pub mod tests {
         assert_matches!(parser.exprs[0], Expr::Bind {name: _, value: _});
         assert_eq!(parser.types[0], ast::Type::UInt64);
     }
+
+    #[test]
+    fn multiple_fundef() {
+        let contents = r#"(fun foo (a: int): int a) (fun bar () (foo 1))"#;
+        let parser = parse(contents).expect("parser error");
+        let_assert_matches!(parser.exprs[0], Expr::FunDef {name: _, args: _, body });
+        let next_expr_after_body = parser.exprs[body.end_i()];
+        let_assert_matches!(next_expr_after_body, Expr::FunDef {
+            body: bar_body,
+            ..
+        });
+        let_assert_matches!(parser.exprs[bar_body.start_i()], Expr::FunCall {name, args});
+        assert_eq!(parser.data.get_ref::<str>(name), "foo");
+        dbg!(args);
+        assert_matches!(parser.exprs[bar_body.start_i() + 1], Expr::Int(_));
+    }
 }

@@ -346,6 +346,14 @@ impl Range<usize> {
     pub fn tup_i(&self) -> (usize, usize) {
         return (self.start_i(), self.end_i());
     }
+
+    pub fn range(&self) -> std::ops::Range<usize> {
+        return self.start_i()..self.end_i();
+    }
+
+    pub fn slice<'a, T>(&self, data: &'a [T]) -> &'a [T] {
+        return &data[self.start_i()..self.end_i()];
+    }
 }
 
 
