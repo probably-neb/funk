@@ -1,6 +1,6 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 
-use super::{Ast, DIndex, EIndex, Expr, Expr::*, RefIdent, Type, Extra};
+use super::{Ast, DIndex, EIndex, Expr, Expr::*, Extra, Range, RefIdent, Type};
 use crate::ast;
 
 pub fn typecheck(ast: &mut Ast) -> Result<()> {
@@ -24,23 +24,34 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
         // call check_expr in else branch
         match expr {
             Expr::Nop => anyhow::bail!("nop has no type"),
-            Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => anyhow::bail!("top level literal not valid. malformed AST"),
+            Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => {
+                anyhow::bail!("top level literal not valid. malformed AST")
+            }
             Expr::Binop { op, lhs, rhs } => {
-                check_binop(&exprs, types, refs, &mut i, expr_i, op, lhs, rhs)?;
+                check_binop(&exprs, types, extra, &mod_scopes, refs, &mut i, expr_i, op, lhs, rhs)?;
             }
             Expr::FunDef { name, args, body } => {
                 let fun_i = i;
                 mod_scopes.functions.bind(name, fun_i);
 
-                i+=1;
+                i += 1;
                 for &arg in extra.fun_args_slice(args) {
                     assert!(exprs[i] == FunArg, "expected fun arg");
                     local_scopes.bind(arg as usize, i);
-                    i+=1;
+                    i += 1;
                     types[i] = Type::Unknown;
                 }
                 assert_eq!(i, body.start_i());
-                let res_type = check_block(exprs, types, refs, extra, &mut i, &mut mod_scopes, &mut local_scopes, body.end_i())?;
+                let res_type = check_block(
+                    exprs,
+                    types,
+                    refs,
+                    extra,
+                    &mut i,
+                    &mut mod_scopes,
+                    &mut local_scopes,
+                    body.end_i(),
+                )?;
                 local_scopes.clear();
                 let ret_type = &mut types[fun_i];
                 if *ret_type == Type::Unknown {
@@ -48,29 +59,12 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                 } else if res_type != types[fun_i] {
                     anyhow::bail!("function return type does not match actual return type");
                 }
-            },
+            }
             Expr::If { .. } => todo!("if"),
             Expr::Bind { .. } => todo!("bind"),
             Expr::FunCall { name, args } => {
-                let fun_i = mod_scopes.functions.get(name).with_context(|| "ruh roh raggiy")?;
-                let Expr::FunDef { args: params_i, ..} = exprs[fun_i] else {
-                    anyhow::bail!("expected fun def");
-                };
-                let num_params = {
-                    let num = extra.fun_num_args(params_i);
-                    num as usize
-                };
-                dbg!(num_params);
-                let param_types_range = fun_i + 1..=(fun_i + num_params);
-                for (&arg, param_type_i) in extra.fun_args_slice(args).iter().zip(param_types_range) {
-                    let arg_type = check_expr(exprs, types, refs, &mut i, arg as usize)?;
-                    let param_type = types[param_type_i];
-                    dbg!(arg_type, param_type);
-                    if arg_type != param_type {
-                        anyhow::bail!("mismatched types in function call");
-                    }
-                }
-            },
+                check_funcall(exprs, types, extra, &mod_scopes, refs, &mut i, name, args,)?;
+            }
             Expr::FunArg => anyhow::bail!("expected top level node found fun arg"),
         }
         i += 1;
@@ -90,9 +84,8 @@ fn check_block(
 ) -> Result<Type> {
     let mut ret_type = Type::Unknown;
     local_scopes.start_subscope();
-    
 
-    while *cursor != until {
+    while *cursor < until {
         let expr_i = *cursor;
         let expr = exprs[expr_i];
 
@@ -104,46 +97,66 @@ fn check_block(
                 assert_eq!(types[expr_i], Type::UInt64);
                 // FIXME: check type conflicts
                 ret_type = Type::UInt64;
-            },
+            }
             Expr::String(_) => {
                 assert_eq!(types[expr_i], Type::String);
                 // FIXME: check type conflicts
                 ret_type = Type::String;
-            },
+            }
             Expr::Ident(name) => {
                 // TODO: implicit returns?
                 let ref_i = local_scopes.get(name).with_context(||
                     // FIXME: need way to get name from DIndex here
-                    format!("unbound identifier: {:?}", name)
-                )?;
+                    format!("unbound identifier: {:?}", name))?;
                 ret_type = types[ref_i];
-            },
-            Expr::Binop { op, lhs, rhs } => {
-                check_binop(&exprs, types, refs, cursor, expr_i, op, lhs, rhs)?;
             }
-            Expr::If { cond, branch_true, branch_false } => {
-                let Type::Bool = check_expr(exprs, types, refs, cursor, cond)? else {
+            Expr::Binop { op, lhs, rhs } => {
+                check_binop(exprs, types, extra, module_scopes, refs, cursor, expr_i, op, lhs, rhs)?;
+            }
+            Expr::If {
+                cond,
+                branch_true,
+                branch_false,
+            } => {
+                let Type::Bool = check_expr(exprs, types, extra, module_scopes, refs, cursor, cond)? else {
                     anyhow::bail!("expected bool in if condition");
                 };
 
-                let branch_true_type = check_block(exprs, types, refs, extra, cursor, module_scopes, local_scopes, branch_true.end_i())?;
-                let branch_false_type = check_block(exprs, types, refs, extra, cursor, module_scopes, local_scopes, branch_false.end_i())?;
+                let branch_true_type = check_block(
+                    exprs,
+                    types,
+                    refs,
+                    extra,
+                    cursor,
+                    module_scopes,
+                    local_scopes,
+                    branch_true.end_i(),
+                )?;
+                let branch_false_type = check_block(
+                    exprs,
+                    types,
+                    refs,
+                    extra,
+                    cursor,
+                    module_scopes,
+                    local_scopes,
+                    branch_false.end_i(),
+                )?;
 
                 if branch_true_type != branch_false_type {
                     anyhow::bail!("mismatched types in if branches");
                 }
 
                 ret_type = branch_true_type;
-            },
+            }
             Expr::Bind { .. } => todo!("bind"),
-            Expr::FunCall { .. } => todo!("fun call"),
+            Expr::FunCall { name, args } => {
+                ret_type = check_funcall(exprs, types, extra, module_scopes, refs, cursor, name, args)?;
+            },
             Expr::FunArg => anyhow::bail!("expected block level node found fun arg"),
-            Expr::FunDef {..} => anyhow::bail!("expected block level node found fun def"),
+            Expr::FunDef { .. } => anyhow::bail!("expected block level node found fun def"),
         }
         *cursor += 1;
-        if *cursor == exprs.len() {
-            panic!("block end not found");
-        }
     }
     *cursor += 1;
     if ret_type == Type::Unknown {
@@ -156,6 +169,8 @@ fn check_block(
 fn check_expr(
     exprs: &[Expr],
     types: &mut [Type],
+    extra: &Extra,
+    mod_scopes: &ModuleScopes,
     refs: &mut [RefIdent],
     cursor: &mut usize,
     expr_i: EIndex,
@@ -166,12 +181,16 @@ fn check_expr(
         Expr::Int(_) | Expr::String(_) => {
             mark_visited(cursor, expr_i);
             Ok(types[expr_i])
-        },
-        Expr::Binop { op, lhs, rhs } => check_binop(exprs, types, refs, cursor, expr_i, op, lhs, rhs),
-        Expr::Bind {..} => todo!("bind"),
+        }
+        Expr::Binop { op, lhs, rhs } => {
+            check_binop(exprs, types, extra, mod_scopes, refs, cursor, expr_i, op, lhs, rhs)
+        }
+        Expr::Bind { .. } => todo!("bind"),
         Expr::Ident(_) => todo!("name resolution"),
         Expr::If { .. } => todo!("if"),
-        Expr::FunCall { .. } => todo!("fun call"),
+        Expr::FunCall { name, args } => {
+            check_funcall(exprs, types, extra, mod_scopes, refs, cursor, name, args)
+        },
         Expr::FunDef { .. } => todo!("fun def"),
         Expr::FunArg => anyhow::bail!("expected expr found fun arg"),
     }
@@ -180,6 +199,8 @@ fn check_expr(
 fn check_binop(
     exprs: &[Expr],
     types: &mut [Type],
+    extra: &Extra,
+    mod_scopes: &ModuleScopes,
     refs: &mut [RefIdent],
     cursor: &mut usize,
     binop_i: EIndex,
@@ -187,8 +208,8 @@ fn check_binop(
     lhs_i: EIndex,
     rhs_i: EIndex,
 ) -> Result<Type> {
-    let lhs_type = check_expr(exprs, types, refs, cursor, lhs_i)?;
-    let rhs_type = check_expr(exprs, types, refs, cursor, rhs_i)?;
+    let lhs_type = check_expr(exprs, types, extra, mod_scopes, refs, cursor, lhs_i)?;
+    let rhs_type = check_expr(exprs, types, extra, mod_scopes, refs, cursor, rhs_i)?;
     if lhs_type != rhs_type {
         // TODO: better error message
         anyhow::bail!("mismatched types in binop");
@@ -206,6 +227,41 @@ fn check_binop(
     };
     types[binop_i] = binop_type;
     return Ok(binop_type);
+}
+
+fn check_funcall(
+    exprs: &[Expr],
+    types: &mut [Type],
+    extra: &Extra,
+    mod_scopes: &ModuleScopes,
+    refs: &mut [RefIdent],
+    cursor: &mut usize,
+    name: DIndex,
+    args: EIndex,
+) -> Result<Type> {
+    let fun_i = mod_scopes
+        .functions
+        .get(name)
+        .with_context(|| "ruh roh raggiy")?;
+    let Expr::FunDef { args: params_i, .. } = exprs[fun_i] else {
+        anyhow::bail!("expected fun def");
+    };
+    let num_params = {
+        let num = extra.fun_num_args(params_i);
+        num as usize
+    };
+    dbg!(num_params);
+    let param_types_range = fun_i + 1..=(fun_i + num_params);
+    for (&arg, param_type_i) in extra.fun_args_slice(args).iter().zip(param_types_range) {
+        let arg_type = check_expr(exprs, types, extra, mod_scopes, refs, cursor, arg as usize)?;
+        let param_type = types[param_type_i];
+        dbg!(arg_type, param_type);
+        if arg_type != param_type {
+            anyhow::bail!("mismatched types in function call");
+        }
+    }
+
+    Ok(types[fun_i])
 }
 
 fn mark_visited(cursor: &mut usize, i: usize) {
@@ -305,28 +361,24 @@ pub mod tests {
 
     // TODO: make macros for checking that the typecheck fails with specific errors
     macro_rules! assert_accepts {
-        ($src:expr) => {
-            {
-                let mut ast = parse($src).expect("parser error");
-                // ast.print();
-                let res = super::typecheck(&mut ast);
-                assert!(res.is_ok(), "{}", res.unwrap_err());
-                ast
-            }
-        };
+        ($src:expr) => {{
+            let mut ast = parse($src).expect("parser error");
+            // ast.print();
+            let res = super::typecheck(&mut ast);
+            assert!(res.is_ok(), "{}", res.unwrap_err());
+            ast
+        }};
     }
 
     macro_rules! assert_rejects {
-        ($src:expr) => {
-            {
-                let mut ast = parse($src).expect("parser error");
-                // ast.print();
-                dbg!(&ast.exprs);
-                let res = super::typecheck(&mut ast);
-                assert!(res.is_err());
-                ast
-            }
-        };
+        ($src:expr) => {{
+            let mut ast = parse($src).expect("parser error");
+            // ast.print();
+            dbg!(&ast.exprs);
+            let res = super::typecheck(&mut ast);
+            assert!(res.is_err());
+            ast
+        }};
     }
 
     #[test]
