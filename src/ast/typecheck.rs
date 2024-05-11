@@ -37,26 +37,41 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                     assert!(exprs[i] == FunArg, "expected fun arg");
                     local_scopes.bind(arg as usize, i);
                     i+=1;
+                    types[i] = Type::Unknown;
                 }
-                assert_eq!(i, body);
-                let res_type = check_block(exprs, types, refs, extra, &mut i, &mut mod_scopes, &mut local_scopes)?;
+                assert_eq!(i, body.start_i());
+                let res_type = check_block(exprs, types, refs, extra, &mut i, &mut mod_scopes, &mut local_scopes, body.end_i())?;
                 local_scopes.clear();
                 let ret_type = &mut types[fun_i];
                 if *ret_type == Type::Unknown {
                     *ret_type = res_type;
-                }
-                if res_type != types[fun_i] {
+                } else if res_type != types[fun_i] {
                     anyhow::bail!("function return type does not match actual return type");
                 }
             },
             Expr::If { .. } => todo!("if"),
             Expr::Bind { .. } => todo!("bind"),
-            Expr::FunCall { .. } => {
-
+            Expr::FunCall { name, args } => {
+                let fun_i = mod_scopes.functions.get(name).with_context(|| "ruh roh raggiy")?;
+                let Expr::FunDef { args: params_i, ..} = exprs[fun_i] else {
+                    anyhow::bail!("expected fun def");
+                };
+                let num_params = {
+                    let num = extra.fun_num_args(params_i);
+                    num as usize
+                };
+                dbg!(num_params);
+                let param_types_range = fun_i + 1..=(fun_i + num_params);
+                for (&arg, param_type_i) in extra.fun_args_slice(args).iter().zip(param_types_range) {
+                    let arg_type = check_expr(exprs, types, refs, &mut i, arg as usize)?;
+                    let param_type = types[param_type_i];
+                    dbg!(arg_type, param_type);
+                    if arg_type != param_type {
+                        anyhow::bail!("mismatched types in function call");
+                    }
+                }
             },
             Expr::FunArg => anyhow::bail!("expected top level node found fun arg"),
-            Expr::BlockEnd => unreachable!("block end"),
-            Expr::FunEnd => unreachable!("fun end"),
         }
         i += 1;
     }
@@ -71,12 +86,13 @@ fn check_block(
     cursor: &mut usize,
     module_scopes: &mut ModuleScopes,
     local_scopes: &mut ScopeStack,
+    until: usize,
 ) -> Result<Type> {
     let mut ret_type = Type::Unknown;
     local_scopes.start_subscope();
     
 
-    while exprs[*cursor] != BlockEnd && exprs[*cursor] != FunEnd {
+    while *cursor != until {
         let expr_i = *cursor;
         let expr = exprs[expr_i];
 
@@ -110,8 +126,8 @@ fn check_block(
                     anyhow::bail!("expected bool in if condition");
                 };
 
-                let branch_true_type = check_block(exprs, types, refs, extra, cursor, module_scopes, local_scopes)?;
-                let branch_false_type = check_block(exprs, types, refs, extra, cursor, module_scopes, local_scopes)?;
+                let branch_true_type = check_block(exprs, types, refs, extra, cursor, module_scopes, local_scopes, branch_true.end_i())?;
+                let branch_false_type = check_block(exprs, types, refs, extra, cursor, module_scopes, local_scopes, branch_false.end_i())?;
 
                 if branch_true_type != branch_false_type {
                     anyhow::bail!("mismatched types in if branches");
@@ -123,8 +139,6 @@ fn check_block(
             Expr::FunCall { .. } => todo!("fun call"),
             Expr::FunArg => anyhow::bail!("expected block level node found fun arg"),
             Expr::FunDef {..} => anyhow::bail!("expected block level node found fun def"),
-            Expr::BlockEnd => unreachable!("block end"),
-            Expr::FunEnd => unreachable!("fun end"),
         }
         *cursor += 1;
         if *cursor == exprs.len() {
@@ -160,8 +174,6 @@ fn check_expr(
         Expr::FunCall { .. } => todo!("fun call"),
         Expr::FunDef { .. } => todo!("fun def"),
         Expr::FunArg => anyhow::bail!("expected expr found fun arg"),
-        Expr::BlockEnd => unreachable!("block end"),
-        Expr::FunEnd => unreachable!("fun end"),
     }
 }
 
@@ -288,8 +300,7 @@ pub mod tests {
     use super::*;
 
     fn parse<'a>(contents: &'a str) -> Result<Ast> {
-        let mut parser = crate::parser::Parser::new(contents);
-        parser.parse()
+        crate::parser::Parser::new(contents).parse()
     }
 
     // TODO: make macros for checking that the typecheck fails with specific errors
@@ -297,7 +308,7 @@ pub mod tests {
         ($src:expr) => {
             {
                 let mut ast = parse($src).expect("parser error");
-                ast.print();
+                // ast.print();
                 let res = super::typecheck(&mut ast);
                 assert!(res.is_ok(), "{}", res.unwrap_err());
                 ast
@@ -309,7 +320,7 @@ pub mod tests {
         ($src:expr) => {
             {
                 let mut ast = parse($src).expect("parser error");
-                ast.print();
+                // ast.print();
                 dbg!(&ast.exprs);
                 let res = super::typecheck(&mut ast);
                 assert!(res.is_err());
@@ -373,5 +384,15 @@ pub mod tests {
     #[test]
     fn unbound_ident() {
         assert_rejects!("(fun foo () a)");
+    }
+
+    #[test]
+    fn incorrect_args() {
+        assert_rejects!(r#"(fun foo (a: int): int a) (fun bar () (foo "str"))"#);
+    }
+
+    #[test]
+    fn correct_args() {
+        assert_accepts!(r#"(fun foo (a: int): int a) (fun bar () (foo 1))"#);
     }
 }

@@ -268,6 +268,10 @@ impl Extra {
     pub fn fun_args_slice(&self, i: XIndex) -> &[u32] {
         return self.get::<ExtraFunArgs>(i).args;
     }
+
+    pub fn fun_num_args(&self, i: XIndex) -> u32 {
+        return self[i];
+    }
 }
 
 impl std::ops::Index<usize> for Extra {
@@ -313,6 +317,38 @@ impl<'e> FromExtra<'e> for ExtraFunArgs<'e> {
         return Self { args };
     }
 }
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Range<T: TryFrom<u32> + Copy> {
+    pub start: u32,
+    pub end: u32,
+    marker: std::marker::PhantomData<T>,
+}
+
+impl Range<usize> {
+    pub fn new(start: usize, end: usize) -> Self {
+        let start = start as u32;
+        let end = end as u32;
+        Range { start, end, marker: std::marker::PhantomData }
+    }
+
+    pub fn start_i(&self) -> usize {
+        return self.start as usize;
+    }
+
+    pub fn end_i(&self) -> usize {
+        return self.end as usize;
+    }
+
+    pub fn tup(&self) -> (u32, u32) {
+        return (self.start, self.end);
+    }
+    pub fn tup_i(&self) -> (usize, usize) {
+        return (self.start_i(), self.end_i());
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {

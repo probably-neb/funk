@@ -243,12 +243,11 @@ impl FIRGen {
                     let arg = arg as usize;
                     self.push_named(Op::FunArg, arg, ty);
                 }
-                let res = self.gen_expr(body)?;
+                let (body_start, body_end) = body.tup_i();
+                let res = self.gen_expr(body_start)?;
                 self.push(Op::Ret(Ref::Inst(res as u32)));
                 self.push(Op::FunEnd);
-                if !matches!(self.next_expr(), Expr::FunEnd) {
-                    unreachable!("expected FunEnd, got {:?}", self.ast.exprs[self.cursor]);
-                }
+                expect_reached(self.cursor, body_end);
                 self.scopes.end();
                 return Ok(fun_def_i);
             }
@@ -287,19 +286,17 @@ impl FIRGen {
                 let br_i = self.reserve();
 
                 let true_i = self.begin_basic_block();
-                let true_res_i = self.gen_expr(branch_true)?;
-                if !matches!(self.next_expr(), Expr::BlockEnd) {
-                    unreachable!("expected End, got {:?}", self.ast.exprs[self.cursor]);
-                }
+                let (true_start, true_end) = branch_true.tup_i();
+                let true_res_i = self.gen_expr(true_start)?;
+                expect_reached(self.cursor, true_end);
                 let true_end_i = self.reserve();
                 let true_ref = Ref::Inst(true_i as u32);
                 let true_res_ref = Ref::Inst(true_res_i as u32);
 
                 let false_i = self.begin_basic_block();
-                let false_res_i = self.gen_expr(branch_false)?;
-                if !matches!(self.next_expr(), Expr::BlockEnd) {
-                    unreachable!("expected End, got {:?}", self.ast.exprs[self.cursor]);
-                }
+                let (false_start, false_end) = branch_false.tup_i();
+                let false_res_i = self.gen_expr(false_start)?;
+                expect_reached(self.cursor, false_end);
                 let false_end_i = self.reserve();
                 let false_ref = Ref::Inst(false_i as u32);
                 let false_res_ref = Ref::Inst(false_res_i as u32);
@@ -378,6 +375,10 @@ impl FIRGen {
         }
         unimplemented!("unimplemented type mismatch");
     }
+}
+
+fn expect_reached(cursor: usize, expected: usize) {
+    assert_eq!(cursor, expected, "expected cursor to be at {}, but got {}", expected, cursor);
 }
 
 #[allow(dead_code)]

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::ast::{Ast, DIndex};
+use crate::ast::{Ast, DIndex, Range};
 use crate::parser::{Binop, EIndex, Expr};
 
 #[derive(Debug, Clone, Copy)]
@@ -145,7 +145,7 @@ impl Compiler {
         self.emit(bc_op);
     }
 
-    fn compile_if(&mut self, cond: EIndex, branch_true: EIndex, branch_false: EIndex) {
+    fn compile_if(&mut self, cond: EIndex, branch_true: Range<EIndex>, branch_false: Range<EIndex>) {
         self.compile_expr(cond);
 
         let jmp_true_i = self.init_jmp();
@@ -154,7 +154,7 @@ impl Compiler {
         self.end_jmp_if_zero(jmp_true_i);
 
         self.scope_stack.start_subscope();
-        self.compile_expr(branch_true);
+        self.compile_expr(branch_true.start_i());
         self.scope_stack.end_subscope();
 
         let jmp_end_i = self.reserve();
@@ -162,7 +162,7 @@ impl Compiler {
         self.end_jmp(jmp_else_i);
 
         self.scope_stack.start_subscope();
-        self.compile_expr(branch_false);
+        self.compile_expr(branch_false.start_i());
         self.scope_stack.end_subscope();
         self.end_jmp(jmp_end_i);
     }
@@ -224,16 +224,13 @@ impl Compiler {
         &self.bytecode
     }
 
-    fn compile_fundef(&mut self, name: DIndex, args: EIndex, body: EIndex) {
+    fn compile_fundef(&mut self, name: DIndex, args: EIndex, body: Range<EIndex>) {
         let start = self.init_jmp();
         self.fun_map.add(name, self.current_offset() as u32, args);
         self.scope_stack.start_new();
         self.bind_fun_args(args);
         self.scope_stack.skip::<2>();
-        self.compile_expr(body);
-        let Some(Expr::FunEnd) = self.next_expr() else {
-            unreachable!("expected fun end");
-        };
+        self.compile_expr(body.start_i());
         self.emit(ByteCode::Ret);
         self.end_jmp(start);
         self.scope_stack.end();

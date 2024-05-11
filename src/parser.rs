@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 
 use crate::{
-    ast::{self, Ast, DIndex, DataPool},
+    ast::{self, Ast, DIndex, DataPool, Range},
     lexer::{self, Lexer, Token},
 };
 
@@ -33,8 +33,8 @@ pub enum Expr {
     String(DIndex),
     If {
         cond: EIndex,
-        branch_true: EIndex,
-        branch_false: EIndex,
+        branch_true: Range<EIndex>,
+        branch_false: Range<EIndex>,
     },
     Binop {
         op: Binop,
@@ -44,11 +44,9 @@ pub enum Expr {
     FunDef {
         name: DIndex,
         args: XIndex,
-        body: EIndex,
+        body: Range<EIndex>,
     },
     FunArg,
-    BlockEnd,
-    FunEnd,
     FunCall {
         name: DIndex,
         args: XIndex,
@@ -191,6 +189,10 @@ impl<'a> Parser<'a> {
         return self.push(Expr::Nop);
     }
 
+    fn next_i(&self) -> EIndex {
+        return self.exprs.len();
+    }
+
     fn expr(&mut self) -> Option<Result<EIndex>> {
         let mut tok = self.tok()?;
         let in_block = tok == Token::LParen;
@@ -301,18 +303,18 @@ impl<'a> Parser<'a> {
         let if_i = self.reserve();
         let cond = self.expr().unwrap()?;
 
-        let branch_true = self.expr().unwrap()?;
-        self.push(Expr::BlockEnd);
+        let then_start = self.expr().unwrap()?;
+        let then_end = self.next_i();
 
-        let branch_false = self.expr().unwrap()?;
-        self.push(Expr::BlockEnd);
+        let else_start = self.expr().unwrap()?;
+        let else_end = self.next_i();
 
         eat!(self, Token::RParen, "if")?;
 
         self.exprs[if_i] = Expr::If {
             cond,
-            branch_true,
-            branch_false,
+            branch_true: Range::new(then_start, then_end),
+            branch_false: Range::new(else_start, else_end),
         };
         Ok(if_i)
     }
@@ -325,13 +327,13 @@ impl<'a> Parser<'a> {
         let name = self.intern_str(range);
         let args = self.fun_args()?;
         let ret_ty = self.try_parse_type_annotation()?;
-        let body = self.expr().context("expected function body")??;
+        let body_start = self.expr().context("expected function body")??;
         eat!(self, Token::RParen, "fun").with_context(|| {
             return "fun err";
         })?;
-        self.exprs[fun_i] = Expr::FunDef { name, args, body };
+        let body_end = self.next_i();
+        self.exprs[fun_i] = Expr::FunDef { name, args, body: Range::new(body_start, body_end)};
         self.types[fun_i] = ret_ty;
-        self.push(Expr::FunEnd);
         Ok(fun_i)
     }
 
@@ -616,8 +618,8 @@ pub mod tests {
                 rhs: _
             }
         );
-        assert_matches!(parser.exprs[branch_true], Expr::String(_));
-        assert_matches!(parser.exprs[branch_false], Expr::String(_));
+        assert_matches!(parser.exprs[branch_true.start_i()], Expr::String(_));
+        assert_matches!(parser.exprs[branch_false.start_i()], Expr::String(_));
     }
 
     #[test]
@@ -634,8 +636,8 @@ pub mod tests {
             }
         );
         let_assert_matches!(parser.exprs[cond], Expr::Binop { op: _, lhs, rhs });
-        assert_eq!(parser.types[branch_true], ast::Type::String);
-        assert_eq!(parser.types[branch_false], ast::Type::String);
+        assert_eq!(parser.types[branch_true.start_i()], ast::Type::String);
+        assert_eq!(parser.types[branch_false.start_i()], ast::Type::String);
 
         assert_eq!(parser.types[lhs], ast::Type::UInt64);
         assert_eq!(parser.types[rhs], ast::Type::UInt64);
@@ -647,7 +649,7 @@ pub mod tests {
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
         assert_matches!(
-            parser.exprs[body],
+            parser.exprs[body.start_i()],
             Expr::Binop {
                 op: _,
                 lhs: _,
