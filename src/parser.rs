@@ -4,6 +4,7 @@ use crate::{
     ast::{self, Ast, DIndex, DataPool, Range},
     lexer::{self, Lexer, Token},
 };
+pub use ast::Expr;
 
 /// Expression index into `exprs`
 pub type EIndex = usize;
@@ -24,38 +25,6 @@ pub struct Parser<'a> {
     types: Vec<ast::Type>,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Expr {
-    Nop,
-    Int(DIndex),
-    Ident(DIndex),
-    String(DIndex),
-    If {
-        cond: EIndex,
-        branch_true: Range<EIndex>,
-        branch_false: Range<EIndex>,
-    },
-    Binop {
-        op: Binop,
-        lhs: EIndex,
-        rhs: EIndex,
-    },
-    FunDef {
-        name: DIndex,
-        args: XIndex,
-        body: Range<EIndex>,
-    },
-    FunArg,
-    FunCall {
-        name: DIndex,
-        args: XIndex,
-    },
-    Bind {
-        name: DIndex,
-        value: EIndex,
-    },
-}
 
 macro_rules! eat {
     ($self:ident, $tok:pat) => {
@@ -873,5 +842,23 @@ pub mod tests {
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
         dbg!(args);
         assert_matches!(parser.exprs[bar_body.start_i() + 1], Expr::Int(_));
+    }
+
+    #[test]
+    fn if_expr_gib() {
+        let contents = r#"
+            let foo int = if true {
+                gib 1
+            } else {
+                gib 2
+            }
+        "#;
+        let parser = parse(contents).expect("parser error");
+    }
+
+    #[test]
+    fn pipe() {
+        let contents = r#"let a int = 1 |> foo() |> bar()"#;
+        let parser = parse(contents).expect("parser error");
     }
 }

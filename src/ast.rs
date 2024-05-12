@@ -9,10 +9,10 @@ use std::{
 use crate::parser::{self, XIndex};
 // TODO: move XIndex, Expr, Binop here
 // TODO: rename Expr to Node
-pub use parser::{EIndex, Expr, Binop};
+pub use parser::{EIndex, Binop};
 
 pub struct Ast {
-    pub exprs: Vec<parser::Expr>,
+    pub exprs: Vec<Expr>,
     pub data: DataPool,
     pub extra: Extra,
     pub types: Vec<Type>,
@@ -65,6 +65,38 @@ impl Ast {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Expr {
+    Nop,
+    Int(DIndex),
+    Ident(DIndex),
+    String(DIndex),
+    If {
+        cond: EIndex,
+        branch_true: Range<EIndex>,
+        branch_false: Range<EIndex>,
+    },
+    Binop {
+        op: Binop,
+        lhs: EIndex,
+        rhs: EIndex,
+    },
+    FunDef {
+        name: DIndex,
+        args: XIndex,
+        body: Range<EIndex>,
+    },
+    FunArg,
+    FunCall {
+        name: DIndex,
+        args: XIndex,
+    },
+    Bind {
+        name: DIndex,
+        value: EIndex,
+    },
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Unknown,
