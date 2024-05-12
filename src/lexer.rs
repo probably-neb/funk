@@ -399,7 +399,7 @@ pub mod tests {
 
     #[test]
     fn type_annotations() {
-        let contents = "(fun (a: int b: int): int (+ a b))";
+        let contents = "fun foo(a int, b int) int { return  (+ a b)}";
         let mut lex = Lexer::new(contents);
         assert_eq!(lex.next_token().unwrap(), Token::LParen);
         assert_eq!(lex.next_token().unwrap(), Token::Fun);

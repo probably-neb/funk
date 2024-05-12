@@ -599,7 +599,7 @@ pub mod tests {
 
     #[test]
     fn if_expr() {
-        let contents = r#"(if (== 4 4) "yes" "no")"#;
+        let contents = r#"if (== 4 4) "yes" else "no""#;
         let parser = parse(contents).expect("parser error");
 
         let_assert_matches!(
@@ -624,7 +624,7 @@ pub mod tests {
 
     #[test]
     fn if_expr_types() {
-        let contents = r#"(if (== 4 4) "yes" "no")"#;
+        let contents = r#"if (== 4 4) "yes" else "no""#;
         let parser = parse(contents).expect("parser error");
 
         let_assert_matches!(
@@ -645,7 +645,7 @@ pub mod tests {
 
     #[test]
     fn fun_expr() {
-        let contents = "(fun foo (a b) (+ a b))";
+        let contents = "fun foo (a int, b int) int {return (+ a b)}";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
         assert_matches!(
@@ -671,7 +671,7 @@ pub mod tests {
 
     #[test]
     fn fun_args() {
-        let contents = "(fun foo (a b c d) (a))";
+        let contents = "fun foo (a int, b int, c int, d int) int {return a}";
         let parser = parse(contents).expect("parser error");
 
         let ast::ExtraFunArgs { args } = parser.extra.get::<ast::ExtraFunArgs>(0);
@@ -689,7 +689,7 @@ pub mod tests {
 
     #[test]
     fn fun_call_args() {
-        let contents = "(foo 0 1 2 3)";
+        let contents = "foo(0, 1, 2, 3)";
         let parser = parse(contents).expect("parser error");
 
         let ast::ExtraFunArgs { args } = parser.extra.get::<ast::ExtraFunArgs>(0);
@@ -708,7 +708,7 @@ pub mod tests {
 
     #[test]
     fn fun_single_arg() {
-        let contents = "(fun foo (a) (+ a 1))";
+        let contents = "fun foo (a int) int {return (+ a 1)}";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
 
@@ -723,7 +723,7 @@ pub mod tests {
 
     #[test]
     fn fun_name_interned() {
-        let contents = "(fun foo (foo bar) (+ foo bar))";
+        let contents = "fun foo (foo int, bar int) int {return (+ foo bar)}";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
@@ -731,7 +731,7 @@ pub mod tests {
 
     #[test]
     fn fun_arg_interned() {
-        let contents = "(fun foo (foo bar) (+ foo bar))";
+        let contents = "fun foo (foo int, bar int) int {return (+ foo bar)}";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
         let arg_names = parser.fun_arg_names_iter(args).collect::<Vec<_>>();
@@ -741,7 +741,7 @@ pub mod tests {
 
     #[test]
     fn var_bind() {
-        let contents = "(let a 1)";
+        let contents = "let a int = 1";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::Bind { name, value });
         assert_eq!(parser.data.get_ref::<str>(name), "a");
@@ -751,7 +751,7 @@ pub mod tests {
 
     #[test]
     fn var_bind_types() {
-        let contents = "(let a 1)";
+        let contents = "let a int = 1";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::Bind { name, value });
         assert_eq!(parser.types[value], ast::Type::UInt64);
@@ -759,7 +759,7 @@ pub mod tests {
 
     #[test]
     fn fun_call() {
-        let contents = "(foo 1 2)";
+        let contents = "foo(1, 2)";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
@@ -769,7 +769,7 @@ pub mod tests {
 
     #[test]
     fn fun_call_arg_expr() {
-        let contents = "(foo (+ 1 1) 2)";
+        let contents = "foo((+ 1 1), 2)";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
@@ -788,7 +788,7 @@ pub mod tests {
 
     #[test]
     fn fun_call_arg_expr_types() {
-        let contents = "(foo (+ 1 1) 2)";
+        let contents = "foo((+ 1 1), 2)";
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         let &[binop_arg, const_arg] = parser.fun_args_slice(args) else {
@@ -805,7 +805,7 @@ pub mod tests {
 
     #[test]
     fn fun_call_no_args() {
-        let contents = "(foo)";
+        let contents = "foo()";
         let parser = parse(contents).expect("parse error");
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
@@ -814,13 +814,15 @@ pub mod tests {
 
     #[test]
     fn fib_if() {
-        let contents = r#" ( if (<= n 1)
-                    (return n)
-                    (return (+
-                              (fib (- n 1))
-                              (fib (- n 2))
-                              ))
+        let contents = r#"
+            if (<= n 1) {
+                return n
+            } else {
+                return (+
+                  fib(( - n 1 ))
+                  fib(( - n 2 ))
                 )
+            }
         "#;
         let parser = parse(contents).expect("parser error");
     }
@@ -836,7 +838,7 @@ pub mod tests {
 
     #[test]
     fn fun_type_annotations() {
-        let contents = "(fun foo (a: int b: int): int (+ a b))";
+        let contents = "(fun foo (a int, b int) int {return (+ a b)})";
         let parser = parse(contents).expect("parser error");
 
         assert_matches!(parser.exprs[0], Expr::FunDef {name: _, args: _, body: _});
@@ -851,7 +853,7 @@ pub mod tests {
 
     #[test]
     fn bind_type_annotations() {
-        let contents = "(let a: int 1)";
+        let contents = "let a int = 1";
         let parser = parse(contents).expect("parser error");
         assert_matches!(parser.exprs[0], Expr::Bind {name: _, value: _});
         assert_eq!(parser.types[0], ast::Type::UInt64);
@@ -859,7 +861,7 @@ pub mod tests {
 
     #[test]
     fn multiple_fundef() {
-        let contents = r#"(fun foo (a: int): int a) (fun bar () (foo 1))"#;
+        let contents = r#"fun foo (a int) int {return a} fun bar () {foo(1)}"#;
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef {name: _, args: _, body });
         let next_expr_after_body = parser.exprs[body.end_i()];
