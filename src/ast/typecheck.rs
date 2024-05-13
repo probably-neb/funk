@@ -8,10 +8,7 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
 
     let mut scopes = Scopes {
         locals: ScopeStack::new(),
-        module: ModuleScopes {
-            globals: ScopeStack::new(),
-            functions: ScopeStack::new(),
-        },
+        module: ModuleScopes::from(&ast.exprs, &ast.extra),
     };
 
     while i < ast.exprs.len() {
@@ -34,18 +31,23 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
             Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => {
                 anyhow::bail!("top level literal not valid. malformed AST")
             }
-            Expr::Return {..} => {
+            Expr::Return { .. } => {
                 anyhow::bail!("return outside of function")
             }
             Expr::Binop { op, lhs, rhs } => {
-                check_binop(
-                    &ctx, op, lhs, rhs,
-                )?;
+                check_binop(&ctx, op, lhs, rhs)?;
             }
             Expr::FunDef { name, args, body } => {
-                let Ctx { exprs, types, extra, cursor: i, scopes, .. } = ctx.clone();
+                let Ctx {
+                    exprs,
+                    types,
+                    extra,
+                    cursor: i,
+                    scopes,
+                    ..
+                } = ctx.clone();
                 let fun_i = *i;
-                scopes.module.functions.bind(name, fun_i);
+                debug_assert_eq!(scopes.module.functions.find(name), Some(*i));
 
                 *i += 1;
                 let args_slice = extra.slice(args);
@@ -55,9 +57,8 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                     *i += 1;
                     types[*i] = Type::Unknown;
                 }
-                debug_assert_eq!(*i, extra.slice(body).first().map(|&n| n as usize).unwrap_or(*i));
-                let (res_type, _) =
-                    check_block(&ctx, body)?;
+                // debug_assert_eq!(*i, extra.slice(body).first().map(|&n| n as usize).unwrap_or(*i));
+                let (res_type, _) = check_block(&ctx, body)?;
                 scopes.locals.clear();
                 let ret_type = &mut types[fun_i];
                 if *ret_type == Type::Unknown {
@@ -66,8 +67,35 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                     anyhow::bail!("function return type does not match actual return type");
                 }
             }
-            Expr::If { .. } => todo!("if"),
-            Expr::Bind { .. } => todo!("bind"),
+            Expr::If {..} => todo!("if"),
+            // Expr::If {
+            //     cond,
+            //     branch_then: branch_true,
+            //     branch_else: branch_false,
+            // } => {
+            //     let Type::Bool = check_expr(&ctx, cond)? else {
+            //         anyhow::bail!("expected bool in if condition");
+            //     };
+            //
+            //     let branch_true_type = check_block(&ctx, branch_true)?;
+            //     let branch_false_type = check_block(&ctx, branch_false)?;
+            //
+            //     if branch_true_type != branch_false_type {
+            //         anyhow::bail!("mismatched types in if branches");
+            //     }
+            // }
+            Expr::Bind { name, value } => {
+                debug_assert_eq!(ctx.scopes.module.globals.find(name), Some(value));
+                let ty = check_expr(&ctx, value)?;
+                // TODO: mark visited even if type is known
+                // this should be:
+                // if (type is unknown)
+                //  { set type = check_expr (marking expr visited)}
+                //  else {mark expr visited}
+                if ctx.types[value] != ty {
+                    ctx.types[value] = ty;
+                }
+            },
             Expr::FunCall { name, args } => {
                 check_funcall(&ctx, name, args)?;
             }
@@ -85,17 +113,20 @@ enum ReturnPath {
     Return,
 }
 
-fn check_block(
-    ctx: &Ctx<'_>,
-    block_i: XIndex,
-) -> Result<(Type, ReturnPath)> {
-    let Ctx { exprs, types, cursor, scopes, extra, ..} = ctx.clone();
+fn check_block(ctx: &Ctx<'_>, block_i: XIndex) -> Result<(Type, ReturnPath)> {
+    let Ctx {
+        exprs,
+        types,
+        cursor,
+        scopes,
+        extra,
+        ..
+    } = ctx.clone();
     scopes.locals.start_subscope();
 
     let mut ret_path = ReturnPath::Naked;
     let mut ret_type = Type::Unknown;
     for (expr_i, &expr) in extra.indexed_iter_of(block_i, exprs) {
-
         // TODO: switch to check for statements,
         // call check_expr in else branch
         match expr {
@@ -118,28 +149,19 @@ fn check_block(
                 ret_type = types[ref_i];
             }
             Expr::Binop { op, lhs, rhs } => {
-                check_binop(
-                    ctx, op, lhs, rhs,
-                )?;
+                check_binop(ctx, op, lhs, rhs)?;
             }
             Expr::If {
                 cond,
                 branch_then: branch_true,
                 branch_else: branch_false,
             } => {
-                let Type::Bool = check_expr(ctx, cond)?
-                else {
+                let Type::Bool = check_expr(ctx, cond)? else {
                     anyhow::bail!("expected bool in if condition");
                 };
 
-                let branch_true_type = check_block(
-                    ctx,
-                    branch_true,
-                )?;
-                let branch_false_type = check_block(
-                    ctx,
-                    branch_false,
-                )?;
+                let branch_true_type = check_block(ctx, branch_true)?;
+                let branch_false_type = check_block(ctx, branch_false)?;
 
                 if branch_true_type != branch_false_type {
                     anyhow::bail!("mismatched types in if branches");
@@ -147,7 +169,7 @@ fn check_block(
 
                 ret_type = branch_true_type.0;
             }
-            Return {value} => {
+            Return { value } => {
                 // FIXME: give ptr to ret type as param to this function
                 // so nested returns can check against it
                 ret_type = match value {
@@ -175,11 +197,14 @@ fn check_block(
     return Ok((ret_type, ret_path));
 }
 
-fn check_expr(
-    ctx: &Ctx<'_>,
-    expr_i: EIndex,
-) -> Result<Type> {
-    let Ctx { exprs, types, cursor, ..} = ctx.clone();
+fn check_expr(ctx: &Ctx<'_>, expr_i: EIndex) -> Result<Type> {
+    let Ctx {
+        exprs,
+        types,
+        cursor,
+        refs,
+        ..
+    } = ctx.clone();
     let expr = exprs[expr_i];
     match expr {
         Expr::Nop => anyhow::bail!("nop has no type"),
@@ -187,28 +212,38 @@ fn check_expr(
             mark_visited(cursor, expr_i);
             Ok(types[expr_i])
         }
-        Expr::Binop { op, lhs, rhs } => check_binop(
-            ctx, op, lhs, rhs,
-        ),
+        Expr::Binop { op, lhs, rhs } => check_binop(ctx, op, lhs, rhs),
         Expr::Bind { .. } => todo!("bind"),
-        Expr::Ident(_) => todo!("name resolution"),
-        Expr::If { .. } => todo!("if"),
-        Expr::FunCall { name, args } => {
-            check_funcall(ctx, name, args)
-        }
+        Expr::Ident(value) => {
+            let ref_i = ctx.scopes.find(value).with_context(|| "unbound identifier")?;
+            refs[expr_i] = Some(ref_i);
+            let ty = types[ref_i];
+            types[expr_i] = ty;
+            mark_visited(cursor, expr_i);
+            Ok(ty)
+        },
+        Expr::If { cond, branch_then, branch_else } => {
+                let Type::Bool = check_expr(ctx, cond)? else {
+                    anyhow::bail!("expected bool in if condition");
+                };
+
+                let branch_true_type = check_block(ctx, branch_then)?;
+                let branch_false_type = check_block(ctx, branch_else)?;
+
+                if branch_true_type != branch_false_type {
+                    anyhow::bail!("mismatched types in if branches");
+                }
+                Ok(branch_true_type.0)
+        },
+        Expr::FunCall { name, args } => check_funcall(ctx, name, args),
         Expr::FunDef { .. } => todo!("fun def"),
         Expr::FunArg => anyhow::bail!("expected expr found fun arg"),
-        Expr::Return {..} => anyhow::bail!("return not an expression"),
+        Expr::Return { .. } => anyhow::bail!("return not an expression"),
     }
 }
 
-fn check_binop(
-    ctx: &Ctx<'_>,
-    op: ast::Binop,
-    lhs_i: EIndex,
-    rhs_i: EIndex,
-) -> Result<Type> {
-    let Ctx { types, cursor, ..} = ctx.clone();
+fn check_binop(ctx: &Ctx<'_>, op: ast::Binop, lhs_i: EIndex, rhs_i: EIndex) -> Result<Type> {
+    let Ctx { types, cursor, .. } = ctx.clone();
     let binop_i = *cursor;
     let lhs_type = check_expr(ctx, lhs_i)?;
     let rhs_type = check_expr(ctx, rhs_i)?;
@@ -231,16 +266,19 @@ fn check_binop(
     return Ok(binop_type);
 }
 
-fn check_funcall(
-    ctx: &Ctx<'_>,
-    name: DIndex,
-    args: EIndex,
-) -> Result<Type> {
-    let Ctx { exprs, types, extra, cursor, scopes, ..} = ctx.clone();
+fn check_funcall(ctx: &Ctx<'_>, name: DIndex, args: EIndex) -> Result<Type> {
+    let Ctx {
+        exprs,
+        types,
+        extra,
+        cursor,
+        scopes,
+        ..
+    } = ctx.clone();
     let fun_i = scopes
         .module
         .functions
-        .get(name)
+        .find(name)
         .with_context(|| "ruh roh raggiy")?;
     let Expr::FunDef { args: params_i, .. } = exprs[fun_i] else {
         anyhow::bail!("expected fun def");
@@ -279,26 +317,108 @@ impl Clone for Ctx<'_> {
     fn clone(&self) -> Self {
         Self {
             exprs: self.exprs,
-            types: unsafe { &mut *(self.types as *const [Type] as *mut [Type])},
-            refs: unsafe { &mut *(self.refs as *const [RefIdent] as *mut [RefIdent])},
+            types: unsafe { &mut *(self.types as *const [Type] as *mut [Type]) },
+            refs: unsafe { &mut *(self.refs as *const [RefIdent] as *mut [RefIdent]) },
             extra: self.extra,
-            cursor: unsafe { &mut *(self.cursor as *const usize as *mut usize)},
-            scopes: unsafe { &mut *(self.scopes as *const Scopes as *mut Scopes)},
+            cursor: unsafe { &mut *(self.cursor as *const usize as *mut usize) },
+            scopes: unsafe { &mut *(self.scopes as *const Scopes as *mut Scopes) },
         }
     }
 }
 
+#[derive(Debug)]
 struct Scopes {
     locals: ScopeStack,
     module: ModuleScopes,
 }
 
+impl Scopes {
+    fn find(&self, name: DIndex) -> Option<EIndex> {
+        self.locals.get(name).or_else(|| self.module.globals.find(name))
+    }
+}
+
 /// Collection of scopes related to a module
 #[derive(Debug)]
 struct ModuleScopes {
-    globals: ScopeStack,
+    globals: ScopeList,
     /// also globals, but not variables
-    functions: ScopeStack,
+    functions: ScopeList,
+}
+
+impl ModuleScopes {
+    pub fn from(exprs: &[Expr], extra: &ast::Extra) -> Self {
+        let mut globals = ScopeList::new();
+        let mut last_fundef_end = 0;
+
+        let mut functions = ScopeList::new();
+
+        // PERF: create a vec of info then sort instead of inserting
+        // one by one
+        for (i, expr) in exprs.iter().enumerate() {
+            match expr {
+                FunDef { name, body, .. } => {
+                    last_fundef_end = extra.last_of(*body) as usize;
+                    functions.insert(*name, i).expect("function name already bound");
+                }
+                Bind { name, value } => {
+                    if i >= last_fundef_end {
+                        globals.insert(*name, *value).unwrap();
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        Self { globals, functions }
+    }
+}
+
+#[derive(Debug)]
+struct ScopeList {
+    indices: Vec<EIndex>,
+    names: Vec<DIndex>,
+}
+
+impl ScopeList {
+    fn new() -> Self {
+        Self {
+            indices: vec![],
+            names: vec![],
+        }
+    }
+    fn new_from(names: Vec<DIndex>, indices: Vec<EIndex>) -> Self {
+        debug_assert!(
+            {
+                let mut sorted = true;
+                let mut last: DIndex = 0;
+                for &name in &names {
+                    if name > last {
+                        sorted = false;
+                        break;
+                    }
+                    last = name;
+                }
+                sorted
+            },
+            "names not sorted"
+        );
+        Self { names, indices }
+    }
+    fn find(&self, name: DIndex) -> Option<EIndex> {
+        let index = self.names.binary_search(&name).ok()?;
+        Some(self.indices[index])
+    }
+    fn insert(&mut self, name: DIndex, expr_i: EIndex) -> Result<()> {
+        let index = match self.names.binary_search(&name) {
+            /* binary search returns the index to insert at if not found */
+            Err(index) => index,
+            Ok(_) => anyhow::bail!("name already bound"),
+        };
+        self.names.insert(index, name);
+        self.indices.insert(index, expr_i);
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -398,7 +518,7 @@ pub mod tests {
     macro_rules! assert_rejects {
         ($src:expr) => {{
             let mut ast = parse($src).expect("parser error");
-            ast.print();
+            // ast.print();
             // dbg!((0..).zip(&ast.exprs).collect::<Vec<_>>());
             let res = super::typecheck(&mut ast);
             assert!(res.is_err());
@@ -431,7 +551,7 @@ pub mod tests {
     fn fun_return_type_misused() {
         // FIXME: add optional return type annotations
         // instead of inferring function return types for now
-        assert_rejects!(r#"(fun foo () 1) (== (foo) "some_str")"#);
+        assert_rejects!(r#"fun foo () 1 (== foo() "some_str")"#);
     }
 
     #[test]
@@ -440,36 +560,47 @@ pub mod tests {
         // type)
         // but this isn't right! Should make `assert_rejects_with` as well as typecheck error union
         // type and check that error matches pattern
-        assert_rejects!(r#"(fun foo () 1) (fun bar () "str") (== (foo) (bar))"#);
+        assert_rejects!(
+            r#"
+            fun foo () {return 1}
+            fun bar() {return "str"}
+            (== foo() bar())
+        "#
+        );
     }
 
     #[test]
     fn wrong_return_type() {
-        assert_rejects!("(fun foo ():str 1)");
+        assert_rejects!("fun foo () str { return 1}");
+    }
+
+    #[test]
+    fn mismatched_branch_arms() {
+        assert_rejects!(r#"let foo str = if (== 1 2) 1 else "str""#);
     }
 
     #[test]
     fn mismatched_return_types() {
-        assert_rejects!(r#"(fun foo() (if (== 1 2) 1 "str"))"#);
+        assert_rejects!(r#"fun foo() { if (== 1 2) 1 else "str"}"#);
     }
 
     #[test]
     fn fun_arg_is_return_type() {
-        assert_accepts!(r#"(fun foo (a) a)"#);
+        assert_accepts!(r#"fun foo (a) {return a}"#);
     }
 
     #[test]
     fn unbound_ident() {
-        assert_rejects!("(fun foo () a)");
+        assert_rejects!("fun foo () { return a }");
     }
 
     #[test]
     fn incorrect_args() {
-        assert_rejects!(r#"(fun foo (a: int): int a) (fun bar () (foo "str"))"#);
+        assert_rejects!(r#"fun foo (a int) int a fun bar () {return foo("str")}"#);
     }
 
     #[test]
     fn correct_args() {
-        assert_accepts!(r#"(fun foo (a: int): int a) (fun bar () (foo 1))"#);
+        assert_accepts!(r#"fun foo(a int) int {return a} fun bar() {return foo(1)}"#);
     }
 }

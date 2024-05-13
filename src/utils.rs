@@ -9,3 +9,11 @@ macro_rules! steal {
 }
 
 pub(crate) use steal;
+
+macro_rules! utf8_str {
+    ($bytes:expr) => {
+        unsafe { std::str::from_utf8_unchecked($bytes)}
+    }
+}
+
+pub(crate) use utf8_str;

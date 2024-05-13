@@ -308,6 +308,7 @@ impl<'a> Parser<'a> {
         let Token::Ident(range) = eat!(self, Token::Ident(_))? else {
             unreachable!()
         };
+        // dbg!(crate::utils::utf8_str!(self.lxr.slice(&range)));
         let name = self.intern_str(range);
         let args = self.fun_args()?;
         let ret_ty = self.try_parse_type_annotation()?;
@@ -409,11 +410,12 @@ impl<'a> Parser<'a> {
         };
         self.next_tok();
         let type_name = self.lxr.slice(&range);
+        // dbg!(crate::utils::utf8_str!(type_name));
         return Ok(match type_name {
             b"int" => ast::Type::UInt64,
             b"str" => ast::Type::String,
             b"bool" => ast::Type::Bool,
-            _ => anyhow::bail!("unknown type {:?}", type_name),
+            _ => anyhow::bail!("unknown type {:?}", unsafe { std::str::from_utf8_unchecked(type_name)}),
         });
     }
 
