@@ -191,6 +191,14 @@ impl<'a> Parser<'a> {
                     Ok(i)
                 }
             }
+            Token::True => {
+                let i = self.push_typed(Expr::Bool(true), ast::Type::Bool);
+                Ok(i)
+            }
+            Token::False => {
+                let i = self.push_typed(Expr::Bool(false), ast::Type::Bool);
+                Ok(i)
+            }
             Token::String(range) => {
                 let expr = Expr::String(self.intern_str(range));
                 let i = self.push_typed(expr, ast::Type::String);

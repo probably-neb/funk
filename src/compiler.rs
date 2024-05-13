@@ -108,6 +108,9 @@ impl Compiler {
             Expr::Binop { op, lhs, rhs } => {
                 self.compile_binop(op, lhs, rhs);
             }
+            Expr::Bool(b) => {
+                self.emit(ByteCode::Push(if b {1} else {0}));
+            }
             Expr::If {
                 cond,
                 branch_then: branch_true,
@@ -127,6 +130,18 @@ impl Compiler {
             Expr::FunCall { name, args } => {
                 self.compile_fun_call(name, args)
                     .expect("compile fun call failed");
+            }
+            Expr::Return {value} => {
+                match value {
+                    Some(value) => {
+                        self.compile_expr(usize::from(value));
+                        self.emit(ByteCode::Ret);
+                    },
+                    None => {
+                        self.emit(ByteCode::Push(0));
+                        self.emit(ByteCode::Ret);
+                    }
+                }
             }
             _ => unimplemented!("Expr: {:?} not implemented", expr),
         }
@@ -153,13 +168,13 @@ impl Compiler {
 
         self.end_jmp_if_zero(jmp_true_i);
 
-        self.compile_expr(branch_true);
+        self.compile_block(branch_true);
 
         let jmp_end_i = self.reserve();
 
         self.end_jmp(jmp_else_i);
 
-        self.compile_expr(branch_false);
+        self.compile_block(branch_false);
         self.end_jmp(jmp_end_i);
     }
 
@@ -236,14 +251,13 @@ impl Compiler {
         self.bind_fun_args(args);
         self.scope_stack.skip::<2>();
         self.compile_block(body);
-        self.emit(ByteCode::Ret);
         self.end_jmp(start);
         self.scope_stack.end();
     }
 
     fn bind_fun_args(&mut self, args_start: usize) {
         let ast = &self.ast;
-        let fun_args = ast.fun_args_slice(args_start);
+        let fun_args = ast.extra.slice(args_start);
         let num_args = fun_args.len();
         for &arg_name in fun_args {
             self.scope_stack.bind_local(arg_name as DIndex);
@@ -501,7 +515,7 @@ mod tests {
 
     #[test]
     fn if_expr() {
-        let contents = "(if 1 2 3)";
+        let contents = "if true 2 else 3";
         let compiler = compile(contents);
         dbg!(&compiler.bytecode.ops);
         assert_bytecode_matches!(
@@ -512,18 +526,18 @@ mod tests {
 
     #[test]
     fn let_bind() {
-        assert_compiles_to!("(let x 1)", [ByteCode::Push(1)]);
+        assert_compiles_to!("let x = 1", [ByteCode::Push(1)]);
     }
 
     #[test]
     fn let_bind_and_use() {
-        assert_compiles_to!("(let x 1) (+ x 1)", [Push(1), Load(0), Push(1), Add]);
+        assert_compiles_to!("let x = 1 (+ x 1)", [Push(1), Load(0), Push(1), Add]);
     }
 
     #[test]
     fn fun_def() {
         assert_compiles_to!(
-            "(fun foo (x) x)",
+            "fun foo(x int) int {return x}",
             [
                 // TODO: implement placing functions somewhere
                 // and storing offsets to them instead of just
@@ -539,7 +553,7 @@ mod tests {
     #[test]
     fn fun_call() {
         assert_compiles_to!(
-            "(fun foo (x) x) (foo 1)",
+            "fun foo(x int) {return x} foo(1)",
             [
                 Jump(3),
                 Load(2),
@@ -554,7 +568,7 @@ mod tests {
     #[test]
     fn fun_call_multiple_args() {
         assert_compiles_to!(
-            "(fun foo (x y) (+ x y)) (foo 1 2)",
+            "fun foo(x int, y int) int {return (+ x y)} foo(1, 2)",
             [
                 Jump(5),
                 Load(3),
@@ -572,7 +586,7 @@ mod tests {
     #[test]
     fn fun_call_rec() {
         assert_compiles_to!(
-            "(fun foo (x) (foo (- x 1))) (foo 10)",
+            "fun foo(x int) int { return foo(( - x 1 )) } foo(10)",
             [
                 Jump(7),
                 Load(2),
@@ -592,12 +606,12 @@ mod tests {
     fn countdown() {
         assert_compiles_to!(
             r#"
-                (fun countdown (n) (
-                    if (> n 0)
-                        (countdown (- n 1))
-                        n
-                ))
-                (countdown 10)
+                fun countdown (n int) int {
+                    return if (> n 0)
+                        countdown((- n 1))
+                        else n
+                }
+                countdown(10)
             "#,
             [
                 Jump(14),

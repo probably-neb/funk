@@ -86,7 +86,7 @@ fn expr_into_treenode(expr_i: usize, ast: &Ast, visited: &mut usize) -> TreeNode
     }
     use Expr::*;
     match expr {
-        Expr::Nop | Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => {
+        Expr::Nop | Expr::Int(_) | Expr::String(_) | Expr::Ident(_) | Expr::Bool(_) => {
             mark_visited(visited, expr_i);
         }
         Expr::FunCall { name, args, .. } => {
@@ -179,6 +179,7 @@ fn repr_expr(expr: Expr, ast: &Ast) -> String {
         Expr::FunCall { name, .. } => format!("Call {}", ast.get_ident(name)),
         Expr::Ident(i) => format!("Ident {}", ast.get_ident(i)),
         Expr::String(i) => format!("Str \"{}\"", ast.get_ident(i)),
+        Expr::Bool(value) => format!("Bool {}", value),
         Expr::Return{value} => format!("Return"),
         Expr::Bind { name, .. } => format!("let {}", ast.get_ident(name)),
         Expr::FunArg => unreachable!("tried to format fun arg"),

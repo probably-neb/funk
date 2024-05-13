@@ -28,7 +28,7 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
         // call check_expr in else branch
         match expr {
             Expr::Nop => anyhow::bail!("nop has no type"),
-            Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => {
+            Expr::Int(_) | Expr::String(_) | Expr::Ident(_) | Expr::Bool(_) => {
                 anyhow::bail!("top level literal not valid. malformed AST")
             }
             Expr::Return { .. } => {
@@ -148,6 +148,10 @@ fn check_block(ctx: &Ctx<'_>, block_i: XIndex) -> Result<(Type, ReturnPath)> {
                     format!("unbound identifier: {:?}", name))?;
                 ret_type = types[ref_i];
             }
+            Expr::Bool(_) => {
+                assert_eq!(types[expr_i], Type::Bool);
+                ret_type = Type::Bool;
+            }
             Expr::Binop { op, lhs, rhs } => {
                 check_binop(ctx, op, lhs, rhs)?;
             }
@@ -208,7 +212,7 @@ fn check_expr(ctx: &Ctx<'_>, expr_i: EIndex) -> Result<Type> {
     let expr = exprs[expr_i];
     match expr {
         Expr::Nop => anyhow::bail!("nop has no type"),
-        Expr::Int(_) | Expr::String(_) => {
+        Expr::Int(_) | Expr::String(_) | Expr::Bool(_) => {
             mark_visited(cursor, expr_i);
             Ok(types[expr_i])
         }

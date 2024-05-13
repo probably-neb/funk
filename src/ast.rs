@@ -99,6 +99,7 @@ pub enum Expr {
     Return {
         value: Option<NonZeroUsize>
     },
+    Bool(bool),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
