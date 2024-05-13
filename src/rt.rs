@@ -172,43 +172,43 @@ mod test {
 
     #[test]
     fn jump_if_zero_not_taken() {
-        let stack = run_src("(if (- 1 2) 3 4)");
+        let stack = run_src("if (- 1 2) 3 else 4");
         assert_eq!(stack, vec![4]);
     }
 
     #[test]
     fn eq() {
-        let stack = run_src("(if (== 1 2) 3 4)");
+        let stack = run_src("if (== 1 2) 3 else 4");
         assert_eq!(stack, vec![4]);
     }
 
     #[test]
     fn lteq() {
-        let stack = run_src("(if (<= 2 2) 3 4)");
+        let stack = run_src("if (<= 2 2) 3 else 4");
         assert_eq!(stack, vec![3]);
     }
 
     #[test]
     fn use_var() {
-        let stack = run_src("(let x 1) (+ x 2)");
+        let stack = run_src("let x int = 1 (+ x 2)");
         assert_eq!(stack, vec![1, 3]);
     }
 
     #[test]
     fn simple_fun_call() {
-        let stack = run_src("(fun add (a b) (+ a b)) (add 1 2)");
+        let stack = run_src("fun add(a int, b int) int {return (+ a b)} add(1,2)");
         assert_eq!(stack, vec![3]);
     }
 
     #[test]
     fn countdown() {
         let contents = r#"
-            (fun countdown (n) (
-                if (> n 0)
-                    (countdown (- n 1))
-                    n
-            ))
-            (countdown 10)
+            fun countdown (n int) int {
+                return if (> n 0)
+                    countdown((- n 1))
+                    else n
+            }
+            countdown(10)
         "#;
         let stack = run_src(contents);
         assert_eq!(stack, vec![0]);
@@ -217,17 +217,16 @@ mod test {
     #[test]
     fn fib() {
         let contents = r#"
-            (fun fib (n) (
-                if (<= n 1)
+            fun fib(n int) int {
+                return if (<= n 1)
                     n
-                    (+
-                      (fib (- n 1))
-                      (fib (- n 2))
+                    else (+
+                      fib((- n 1))
+                      fib((- n 2))
                       )
-                )
-           )
+            }
 
-            (fib 10)
+            fib(10)
         "#;
         let stack = run_src(contents);
         // fib(10)

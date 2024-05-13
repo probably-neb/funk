@@ -29,7 +29,17 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
         match expr {
             Expr::Nop => anyhow::bail!("nop has no type"),
             Expr::Int(_) | Expr::String(_) | Expr::Ident(_) | Expr::Bool(_) => {
-                anyhow::bail!("top level literal not valid. malformed AST")
+                let mut s = "".to_string();
+                let value = match expr {
+                    Expr::Int(value) => {
+                        s = ast.get_const::<u64>(value).to_string();
+                        &s
+                    },
+                    Expr::String(value) | Expr::Ident(value) => ast.get_ident(value),
+                    Expr::Bool(b) => if b { "true" } else { "false" },
+                    _ => unreachable!(),
+                };
+                anyhow::bail!("top level literal `{}` at {} not valid. malformed AST", value, i)
             }
             Expr::Return { .. } => {
                 anyhow::bail!("return outside of function")
@@ -55,7 +65,6 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                     assert!(exprs[*i] == FunArg, "expected fun arg");
                     scopes.locals.bind(arg as usize, *i);
                     *i += 1;
-                    types[*i] = Type::Unknown;
                 }
                 // debug_assert_eq!(*i, extra.slice(body).first().map(|&n| n as usize).unwrap_or(*i));
                 let (res_type, _) = check_block(&ctx, body)?;
@@ -153,7 +162,8 @@ fn check_block(ctx: &Ctx<'_>, block_i: XIndex) -> Result<(Type, ReturnPath)> {
                 ret_type = Type::Bool;
             }
             Expr::Binop { op, lhs, rhs } => {
-                check_binop(ctx, op, lhs, rhs)?;
+                ret_type = check_binop(ctx, op, lhs, rhs)?;
+                types[expr_i] = ret_type;
             }
             Expr::If {
                 cond,
@@ -168,7 +178,7 @@ fn check_block(ctx: &Ctx<'_>, block_i: XIndex) -> Result<(Type, ReturnPath)> {
                 let branch_false_type = check_block(ctx, branch_false)?;
 
                 if branch_true_type != branch_false_type {
-                    anyhow::bail!("mismatched types in if branches");
+                    anyhow::bail!("mismatched types in if branches: lhs={:?} rhs={:?}", branch_true_type, branch_false_type);
                 }
 
                 ret_type = branch_true_type.0;
@@ -192,7 +202,7 @@ fn check_block(ctx: &Ctx<'_>, block_i: XIndex) -> Result<(Type, ReturnPath)> {
             Expr::FunArg => anyhow::bail!("expected block level node found fun arg"),
             Expr::FunDef { .. } => anyhow::bail!("expected block level node found fun def"),
         }
-        *cursor += 1;
+        mark_visited(cursor, expr_i);
     }
     if ret_type == Type::Unknown {
         ret_type = Type::Void;
@@ -270,7 +280,7 @@ fn check_binop(ctx: &Ctx<'_>, op: ast::Binop, lhs_i: EIndex, rhs_i: EIndex) -> R
     return Ok(binop_type);
 }
 
-fn check_funcall(ctx: &Ctx<'_>, name: DIndex, args: EIndex) -> Result<Type> {
+fn check_funcall(ctx: &Ctx<'_>, name: DIndex, args: XIndex) -> Result<Type> {
     let Ctx {
         exprs,
         types,
@@ -288,18 +298,17 @@ fn check_funcall(ctx: &Ctx<'_>, name: DIndex, args: EIndex) -> Result<Type> {
         anyhow::bail!("expected fun def");
     };
     mark_visited(cursor, fun_i);
-    let num_params = {
-        let num = extra.fun_num_args(params_i);
-        num as usize
-    };
+    let num_params = extra.len_of(params_i);
     let param_types_range = fun_i + 1..=(fun_i + num_params);
-    for (&arg, param_type_i) in extra.fun_args_slice(args).iter().zip(param_types_range) {
-        let arg_type = check_expr(ctx, arg as usize)?;
+    for (arg, param_type_i) in extra.iter(args).zip(param_types_range) {
+        let arg = arg as usize;
+        let arg_type = check_expr(ctx, arg)?;
         let param_type = types[param_type_i];
         if arg_type != param_type {
             anyhow::bail!("mismatched types in function call");
         }
     }
+    mark_visited(cursor, extra.last_of(args) as usize);
 
     Ok(types[fun_i])
 }
@@ -590,7 +599,12 @@ pub mod tests {
 
     #[test]
     fn fun_arg_is_return_type() {
-        assert_accepts!(r#"fun foo (a) {return a}"#);
+        assert_accepts!(r#"fun foo (a int) int {return a}"#);
+    }
+
+    #[test]
+    fn fun_call() {
+        assert_accepts!(r#"fun foo (a int) int {return a} foo(10)"#);
     }
 
     #[test]
