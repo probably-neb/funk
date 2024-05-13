@@ -278,8 +278,8 @@ impl FIRGen {
             }
             Expr::If {
                 cond,
-                branch_true,
-                branch_false,
+                branch_then: branch_true,
+                branch_else: branch_false,
             } => {
                 let cond_i = self.gen_expr(cond)?;
                 let cond_ref = Ref::Inst(cond_i as u32);

@@ -3,8 +3,9 @@ mod parser;
 mod ast;
 mod compiler;
 mod rt;
-mod fir;
-mod lower;
+mod utils;
+// mod fir;
+// mod lower;
 
 use anyhow::Result;
 

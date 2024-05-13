@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::ast::{Ast, DIndex, Range};
-use crate::parser::{Binop, EIndex, Expr};
+use crate::parser::{Binop, EIndex, Expr, XIndex};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ByteCode {
@@ -110,8 +110,8 @@ impl Compiler {
             }
             Expr::If {
                 cond,
-                branch_true,
-                branch_false,
+                branch_then: branch_true,
+                branch_else: branch_false,
             } => {
                 self.compile_if(cond, branch_true, branch_false);
             }
@@ -145,7 +145,7 @@ impl Compiler {
         self.emit(bc_op);
     }
 
-    fn compile_if(&mut self, cond: EIndex, branch_true: Range<EIndex>, branch_false: Range<EIndex>) {
+    fn compile_if(&mut self, cond: EIndex, branch_true: XIndex, branch_false: XIndex) {
         self.compile_expr(cond);
 
         let jmp_true_i = self.init_jmp();
@@ -153,18 +153,23 @@ impl Compiler {
 
         self.end_jmp_if_zero(jmp_true_i);
 
-        self.scope_stack.start_subscope();
-        self.compile_expr(branch_true.start_i());
-        self.scope_stack.end_subscope();
+        self.compile_expr(branch_true);
 
         let jmp_end_i = self.reserve();
 
         self.end_jmp(jmp_else_i);
 
-        self.scope_stack.start_subscope();
-        self.compile_expr(branch_false.start_i());
-        self.scope_stack.end_subscope();
+        self.compile_expr(branch_false);
         self.end_jmp(jmp_end_i);
+    }
+
+    fn compile_block(&mut self, block: XIndex) {
+        self.scope_stack.start_subscope();
+        let exprs = self.ast.extra.slice(block);
+        for expr_i in exprs {
+            crate::utils::steal!(Self, self).compile_expr(*expr_i as usize);
+        }
+        self.scope_stack.end_subscope();
     }
 
     fn compile_bind(&mut self, name: DIndex, value: EIndex) {
@@ -224,13 +229,13 @@ impl Compiler {
         &self.bytecode
     }
 
-    fn compile_fundef(&mut self, name: DIndex, args: EIndex, body: Range<EIndex>) {
+    fn compile_fundef(&mut self, name: DIndex, args: EIndex, body: XIndex) {
         let start = self.init_jmp();
         self.fun_map.add(name, self.current_offset() as u32, args);
         self.scope_stack.start_new();
         self.bind_fun_args(args);
         self.scope_stack.skip::<2>();
-        self.compile_expr(body.start_i());
+        self.compile_block(body);
         self.emit(ByteCode::Ret);
         self.end_jmp(start);
         self.scope_stack.end();

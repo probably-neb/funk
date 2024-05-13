@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
-use super::{Ast, DIndex, EIndex, Expr, Expr::*, Extra, Range, RefIdent, Type};
-use crate::ast;
+use super::{Ast, DIndex, EIndex, Expr, Expr::*, Extra, RefIdent, Type};
+use crate::{ast, parser::XIndex};
 
 pub fn typecheck(ast: &mut Ast) -> Result<()> {
     let mut i = 0;
@@ -45,15 +45,16 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                 scopes.module.functions.bind(name, fun_i);
 
                 *i += 1;
+                let args_slice = extra.slice(args);
                 for &arg in extra.fun_args_slice(args) {
                     assert!(exprs[*i] == FunArg, "expected fun arg");
                     scopes.locals.bind(arg as usize, *i);
                     *i += 1;
                     types[*i] = Type::Unknown;
                 }
-                assert_eq!(*i, body.start_i());
+                debug_assert_eq!(*i, extra.slice(body).first().map(|&n| n as usize).unwrap_or(*i));
                 let res_type =
-                    check_block(&ctx, body.end_i())?;
+                    check_block(&ctx, body)?;
                 scopes.locals.clear();
                 let ret_type = &mut types[fun_i];
                 if *ret_type == Type::Unknown {
@@ -76,15 +77,13 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
 
 fn check_block(
     ctx: &Ctx<'_>,
-    until: usize,
+    block_i: XIndex,
 ) -> Result<Type> {
-    let Ctx { exprs, types, cursor, scopes, ..} = ctx.clone();
+    let Ctx { exprs, types, cursor, scopes, extra, ..} = ctx.clone();
     scopes.locals.start_subscope();
 
     let mut ret_type = Type::Unknown;
-    while *cursor < until {
-        let expr_i = *cursor;
-        let expr = exprs[expr_i];
+    for (expr_i, &expr) in extra.enumerated_slice_of(block_i, exprs) {
 
         // TODO: switch to check for statements,
         // call check_expr in else branch
@@ -114,8 +113,8 @@ fn check_block(
             }
             Expr::If {
                 cond,
-                branch_true,
-                branch_false,
+                branch_then: branch_true,
+                branch_else: branch_false,
             } => {
                 let Type::Bool = check_expr(ctx, cond)?
                 else {
@@ -124,11 +123,11 @@ fn check_block(
 
                 let branch_true_type = check_block(
                     ctx,
-                    branch_true.end_i(),
+                    branch_true,
                 )?;
                 let branch_false_type = check_block(
                     ctx,
-                    branch_false.end_i(),
+                    branch_false,
                 )?;
 
                 if branch_true_type != branch_false_type {

@@ -93,32 +93,32 @@ fn expr_into_treenode(expr: Expr, ast: &Ast, visited: &mut usize) -> TreeNode<St
         }
         Expr::If {
             cond,
-            branch_true,
-            branch_false,
+            branch_then: branch_true,
+            branch_else: branch_false,
         } => {
             let cond_node = expr_into_treenode(ast.exprs[cond], ast, visited);
             node.add_node(cond_node);
             mark_visited(visited, cond);
 
             let mut true_node = TreeNode::new("Then".to_string());
-            let (mut i, end) = branch_true.tup_i();
-            while i < end {
+            let mut last = branch_true;
+            for (i, &expr) in ast.extra.enumerated_slice_of(branch_true, &ast.exprs) {
                 let expr_node = expr_into_treenode(ast.exprs[i], ast, visited);
                 true_node.add_node(expr_node);
-                i = usize::max(i + 1,*visited);
+                last = usize::max(i + 1,*visited);
             }
             node.add_node(true_node);
-            mark_visited(visited, i);
+            mark_visited(visited, last);
 
             let mut false_node = TreeNode::new("Else".to_string());
-            let (mut i, end) = branch_false.tup_i();
-            while i < end {
+            let mut last = branch_true;
+            for (i, &expr) in ast.extra.enumerated_slice_of(branch_false, &ast.exprs) {
                 let expr_node = expr_into_treenode(ast.exprs[i], ast, visited);
                 false_node.add_node(expr_node);
-                i = usize::max(i + 1,*visited);
+                last = usize::max(i + 1,*visited);
             }
             node.add_node(false_node);
-            mark_visited(visited, i);
+            mark_visited(visited, last);
         }
         Expr::Binop { lhs, rhs, .. } => {
             let lhs_node = expr_into_treenode(ast.exprs[lhs], ast, visited);
@@ -139,14 +139,13 @@ fn expr_into_treenode(expr: Expr, ast: &Ast, visited: &mut usize) -> TreeNode<St
 
             // visiting body will skip the empty funarg nodes
             let mut body_node = TreeNode::new("Body".to_string());
-            let (mut i, end) = body.tup_i();
-            while i < end {
+            for (i, &expr) in ast.extra.enumerated_slice_of(body, &ast.exprs) {
                 assert_ne!(ast.exprs[i], Expr::FunArg);
                 let body_expr_node = expr_into_treenode(ast.exprs[i], ast, visited);
                 body_node.add_node(body_expr_node);
-                i = usize::max(i + 1, *visited);
+                // i = usize::max(i + 1, *visited);
             }
-            mark_visited(visited, i + 1);
+            // mark_visited(visited, i + 1);
             node.add_node(body_node);
         }
         Expr::Bind { name, value } => {

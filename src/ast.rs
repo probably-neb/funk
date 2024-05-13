@@ -74,8 +74,8 @@ pub enum Expr {
     String(DIndex),
     If {
         cond: EIndex,
-        branch_true: Range<EIndex>,
-        branch_false: Range<EIndex>,
+        branch_then: XIndex,
+        branch_else: XIndex,
     },
     Binop {
         op: Binop,
@@ -85,7 +85,7 @@ pub enum Expr {
     FunDef {
         name: DIndex,
         args: XIndex,
-        body: Range<EIndex>,
+        body: XIndex,
     },
     FunArg,
     FunCall {
@@ -173,6 +173,10 @@ impl DataPool {
         self.map.insert(&self.tmp, i);
         self.pool.append(&mut self.tmp);
         return i;
+    }
+
+    pub fn get_id(&self, val: &[u8]) -> Option<DIndex> {
+        return self.map.get(val);
     }
 
     pub fn get<T: ReadFromBytes>(&self, i: DIndex) -> T {
@@ -293,9 +297,35 @@ impl Extra {
 
     pub fn concat(&mut self, data: &[ExtraData]) -> usize {
         let len = data.len() as u32;
+        self.data.reserve_exact(data.len() + 1);
         let i = self.append(len);
         self.data.extend_from_slice(data);
         return i;
+    }
+
+    pub fn slice(&self, i: usize) -> &[ExtraData] {
+        return self.slice_of(i, &self.data);
+    }
+
+    pub fn len_of(&self, i: usize) -> usize {
+        return self.data[i] as usize;
+    }
+
+    pub fn enumerated_slice_of<'a, T>(&self, i: usize, items: &'a [T]) -> impl Iterator<Item = (usize, &'a T)> {
+        let len = self.data[i] as usize;
+        let start = i + 1;
+        let end = start + len;
+        return (start..end).zip(&items[start..end]);
+    }
+
+    pub fn slice_of<'a, T>(&'a self, i: usize, items: &'a [T]) -> &[T] {
+        let len = self.data[i] as usize;
+        let start = i + 1;
+        if start == self.data.len() {
+            return &[];
+        }
+        let end = start + len;
+        return &items[start..end];
     }
     pub fn fun_args_slice(&self, i: XIndex) -> &[u32] {
         return self.get::<ExtraFunArgs>(i).args;

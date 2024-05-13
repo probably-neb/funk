@@ -30,9 +30,11 @@ pub enum Token {
     False,
     Eof,
     If,
+    Else,
     Fun,
     Let,
     Colon,
+    Comma,
 }
 
 pub struct Lexer<'a> {
@@ -46,6 +48,7 @@ static KEYWORDS: phf::Map<&'static [u8], Token> = phf_map! {
     b"true" => Token::True,
     b"false" => Token::False,
     b"if" => Token::If,
+    b"else" => Token::Else,
     b"fun" => Token::Fun,
     b"let" => Token::Let,
 };
@@ -215,6 +218,7 @@ impl<'a> Lexer<'a> {
             b'*' => Token::Mul,
             b'/' => Token::Div,
             b':' => Token::Colon,
+            b',' => Token::Comma,
             _ => unreachable!("unrecognized punct {}", self.ch as char),
         }
     }
