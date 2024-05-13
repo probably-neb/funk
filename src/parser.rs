@@ -17,6 +17,7 @@ pub type XIndex = usize;
 
 const DEFAULT_ARGS_CAP: usize = 16;
 
+#[derive(Clone)]
 pub struct Parser<'a> {
     lxr: Lexer<'a>,
     tok_i: TIndex,
@@ -29,7 +30,7 @@ pub struct Parser<'a> {
 
 macro_rules! eat {
     ($self:ident, $tok:pat) => {
-        match $self.tok() {
+        match $self.next_tok() {
             // binds tok to the value of the token within Some
             Some(tok @ $tok) => Ok(tok),
             Some(tok) => Err(anyhow!("expected {:?}, got {:?}", stringify!($tok), tok)),
@@ -37,7 +38,7 @@ macro_rules! eat {
         }
     };
     ($self:ident, $tok:pat, $msg:literal) => {
-        match $self.tok() {
+        match $self.next_tok() {
             // binds tok to the value of the token within Some
             Some(tok @ $tok) => Ok(tok),
             Some(tok) => Err(anyhow!(
@@ -71,9 +72,13 @@ impl<'a> Parser<'a> {
         Parser::_new(Lexer::new(contents))
     }
 
+
+    pub fn ast(self) -> Ast {
+        Ast::new(self.exprs, self.data, self.extra, self.types)
+    }
     pub fn parse(mut self) -> Result<crate::ast::Ast> {
         self._parse()?;
-        Ok(Ast::new(self.exprs, self.data, self.extra, self.types))
+        Ok(self.ast())
     }
 
     fn _parse(&mut self) -> Result<()> {
@@ -191,6 +196,14 @@ impl<'a> Parser<'a> {
                 let i = self.push_typed(expr, ast::Type::String);
                 Ok(i)
             }
+            Token::Return => {
+                let Ok(expr) = self.expr()? else {
+                    return Some(Err(anyhow!("expected expr after return")));
+                };
+                let value = core::num::NonZeroUsize::new(expr);
+                let i = self.push(Expr::Return{ value });
+                Ok(i)
+            }
             Token::If => self.if_expr(),
             Token::Fun => self.fun_expr(),
             Token::Let => self.bind_expr(),
@@ -221,7 +234,6 @@ impl<'a> Parser<'a> {
         let call = self.reserve();
         let args = self.fun_call_args()?;
         self.exprs[call] = Expr::FunCall { name, args };
-        eat!(self, Token::RParen, "end of fun call").with_context(|| "fun call err")?;
         return Ok(call);
     }
 
@@ -232,16 +244,17 @@ impl<'a> Parser<'a> {
         };
 
         if let Token::RParen = tok {
+            self.next_tok();
             // no args
-            let extra_i = self.extra.append(0);
+            let extra_i = self.extra.concat(&[]);
             return Ok(extra_i);
         }
 
-        let args_list = Vec::with_capacity(DEFAULT_ARGS_CAP);
+        let mut args_list = Vec::with_capacity(DEFAULT_ARGS_CAP);
 
         loop {
             let arg = self.expr().context("expected arg")??;
-            self.extra.append(arg as u32);
+            args_list.push(arg as u32);
             match self.peek_tok() {
                 Some(Token::RParen) => break,
                 Some(Token::Comma) => {
@@ -282,8 +295,6 @@ impl<'a> Parser<'a> {
         eat!(self, Token::Else, "if")?;
         let else_block = self.block()?;
 
-        eat!(self, Token::RParen, "if")?;
-
         self.exprs[if_i] = Expr::If {
             cond,
             branch_then: then_block,
@@ -301,21 +312,27 @@ impl<'a> Parser<'a> {
         let args = self.fun_args()?;
         let ret_ty = self.try_parse_type_annotation()?;
         let body = self.block().context("expected function body")?;
-        self.exprs[fun_i] = Expr::FunDef {
-            name,
-            args,
-            body,
-        };
+        self.exprs[fun_i] = Expr::FunDef { name, args, body };
         self.types[fun_i] = ret_ty;
         Ok(fun_i)
     }
 
     fn block(&mut self) -> Result<XIndex> {
-        eat!(self, Token::LSquirly, "block").with_context(|| format!("expected {{ got {:?}", self.tok()))?;
+        if let Some(Token::LSquirly) = self.peek_tok() {
+            /* pass */
+        } else {
+            let expr_i = self.expr().expect("non squirly block is expr")?;
+            return Ok(self.extra.concat(&[expr_i as u32]));
+        }
+        eat!(self, Token::LSquirly, "block")
+            .with_context(|| format!("expected {{ got {:?}", self.tok()))?;
 
         let mut exprs = Vec::new();
         while let Some(expr) = self.expr() {
             exprs.push(expr? as u32);
+            if let Some(Token::RSquirly) = self.peek_tok() {
+                break;
+            }
         }
         eat!(self, Token::RSquirly, "block").with_context(|| "block err")?;
         return Ok(self.extra.concat(&exprs));
@@ -323,13 +340,14 @@ impl<'a> Parser<'a> {
 
     fn fun_args(&mut self) -> Result<XIndex> {
         eat!(self, Token::LParen)?;
-        let Some(tok) = self.next_tok() else {
+        let Some(tok) = self.peek_tok() else {
             return Err(anyhow!("expected args got EOF"));
         };
 
         if let Token::RParen = tok {
+            self.next_tok();
             // no args
-            let extra_i = self.extra.append(0);
+            let extra_i = self.extra.concat(&[]);
             return Ok(extra_i);
         }
 
@@ -338,22 +356,30 @@ impl<'a> Parser<'a> {
         // array but has nice methods to use like vec
         let mut args_list: Vec<u32> = Vec::with_capacity(DEFAULT_ARGS_CAP);
 
-        let Token::Ident(first_range) = tok else {
-            return Err(anyhow!("incomplete args"));
-        };
-        let first_name = self.intern_str(first_range);
-        args_list.push(first_name as u32);
-        let first_arg_type = self.try_parse_type_annotation()?;
-        self.push_typed(Expr::FunArg, first_arg_type);
-
-        while let Some(Token::Ident(range)) = self.next_tok() {
+        loop {
+            let Some(Token::Ident(range)) = self.next_tok() else {
+                return Err(anyhow!("expected ident in args"));
+            };
             let name = self.intern_str(range);
             args_list.push(name as u32);
             let arg_type = self.try_parse_type_annotation()?;
             self.push_typed(Expr::FunArg, arg_type);
+            match self.peek_tok() {
+                Some(Token::RParen) => break,
+                Some(Token::Comma) => {
+                    self.next_tok();
+                    continue;
+                }
+                Some(tok) => {
+                    return Err(anyhow!("unexpected token {:?}", tok));
+                }
+                None => {
+                    return Err(anyhow!("expected RParen got EOF"));
+                }
+            }
         }
 
-        debug_assert_eq!(self.tokens[self.tok_i], Token::RParen);
+        eat!(self, Token::RParen, "end of fun args")?;
 
         let extra_i = self.extra.concat(&args_list);
         return Ok(extra_i);
@@ -361,14 +387,16 @@ impl<'a> Parser<'a> {
 
     fn bind_expr(&mut self) -> Result<EIndex> {
         let bind_i = self.reserve();
-        let Token::Ident(range) = eat!(self, Token::Ident(_))? else {
+        let Some(Token::Ident(range)) = self.next_tok() else {
             anyhow::bail!("expected ident in bind expr");
         };
         let bound_type = self.try_parse_type_annotation()?;
         let name = self.intern_str(range);
 
+        let Some(Token::Eq) = self.next_tok() else {
+            anyhow::bail!("expected `=` in bind expr");
+        };
         let value = self.expr().expect("no value in bind expr")?;
-        eat!(self, Token::RParen)?;
 
         self.exprs[bind_i] = Expr::Bind { name, value };
         self.types[bind_i] = bound_type;
@@ -379,6 +407,7 @@ impl<'a> Parser<'a> {
         let Some(Token::Ident(range)) = self.peek_tok() else {
             return Ok(ast::Type::Unknown);
         };
+        self.next_tok();
         let type_name = self.lxr.slice(&range);
         return Ok(match type_name {
             b"int" => ast::Type::UInt64,
@@ -598,8 +627,14 @@ pub mod tests {
                 rhs: _
             }
         );
-        assert_matches!(parser.extra.slice_of(branch_then, &parser.exprs), &[Expr::String(_)]);
-        assert_matches!(parser.extra.slice_of(branch_else, &parser.exprs), &[Expr::String(_)]);
+        assert_matches!(
+            parser.extra.iter_of(branch_then, &parser.exprs).next(),
+            Some(Expr::String(_))
+        );
+        assert_matches!(
+            parser.extra.iter_of(branch_else, &parser.exprs).next(),
+            Some( Expr::String(_) )
+        );
     }
 
     #[test]
@@ -616,8 +651,14 @@ pub mod tests {
             }
         );
         let_assert_matches!(parser.exprs[cond], Expr::Binop { op: _, lhs, rhs });
-        assert_matches!(parser.extra.slice_of(branch_then, &parser.types), &[ast::Type::String]);
-        assert_matches!(parser.extra.slice_of(branch_else, &parser.types), &[ast::Type::String]);
+        assert_matches!(
+            parser.extra.iter_of(branch_then, &parser.types).next(),
+            Some( ast::Type::String )
+        );
+        assert_matches!(
+            parser.extra.iter_of(branch_then, &parser.types).next(),
+            Some( ast::Type::String )
+        );
 
         assert_eq!(parser.types[lhs], ast::Type::UInt64);
         assert_eq!(parser.types[rhs], ast::Type::UInt64);
@@ -629,13 +670,15 @@ pub mod tests {
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunDef { name, args, body });
         let body = parser.extra.slice(body);
-        assert_matches!(
+        let_assert_matches!(
             parser.exprs[body[0] as usize],
-            Expr::Binop {
-                op: _,
-                lhs: _,
-                rhs: _
+            Expr::Return {
+                value: Some(value)
             }
+        );
+        assert_matches!(
+            parser.exprs[usize::from(value)],
+            Expr::Binop { op: Binop::Add, lhs, rhs }
         );
     }
 
@@ -673,16 +716,17 @@ pub mod tests {
         let contents = "foo(0, 1, 2, 3)";
         let parser = parse(contents).expect("parser error");
 
-        let ast::ExtraFunArgs { args } = parser.extra.get::<ast::ExtraFunArgs>(0);
+        let Expr::FunCall { name, args} = parser.exprs[0] else {
+            unreachable!();
+        };
+        let args = parser.extra.slice(args);
 
         assert_eq!(args.len(), 4);
 
-        dbg!(args);
         for i in 0..args.len() {
             let arg = args[i as usize];
             let_assert_matches!(parser.exprs[arg as usize], Expr::Int(di));
-            dbg!(di);
-            let data = dbg!(parser.data.get::<u64>(di));
+            let data = parser.data.get::<u64>(di);
             assert_eq!(data, i as u64);
         }
     }
@@ -698,7 +742,7 @@ pub mod tests {
             assert_eq!(args.len(), 1);
         }
 
-        let arg = parser.fun_args_slice(args)[0];
+        let arg = parser.extra.slice(args)[0];
         assert_eq!(parser.get_ident(arg as usize), "a");
     }
 
@@ -754,17 +798,9 @@ pub mod tests {
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
-        let &[binop_arg, _] = parser.fun_args_slice(args) else {
+        let Some(Expr::Binop { ..}) = parser.extra.iter_of(args, &parser.exprs).next() else {
             unreachable!();
         };
-        assert_matches!(
-            parser.exprs[binop_arg as usize],
-            Expr::Binop {
-                op: _,
-                lhs: _,
-                rhs: _
-            }
-        );
     }
 
     #[test]
@@ -810,7 +846,7 @@ pub mod tests {
 
     #[test]
     fn echo() {
-        let contents = r#"(fun echo (a) a)"#;
+        let contents = r#"fun echo(a int) int {return a}"#;
         let parser = parse(contents).expect("parser error");
         assert_matches!(
             parser.exprs[0],
@@ -826,7 +862,7 @@ pub mod tests {
 
     #[test]
     fn fun_type_annotations() {
-        let contents = "(fun foo (a int, b int) int {return (+ a b)})";
+        let contents = "fun foo (a int, b int) int {return (+ a b)}";
         let parser = parse(contents).expect("parser error");
 
         assert_matches!(
@@ -866,17 +902,21 @@ pub mod tests {
                 body
             }
         );
-        let Some(&Expr::FunDef { body: bar_body, .. }) = parser.exprs.iter().find(|e| matches!(e, Expr::FunDef {name, ..} if *name == parser.data.get_id(b"bar").unwrap())) else {
+        // {
+        //     let ast = parser.clone().ast();
+        //     ast.print();
+        // };
+        let bar_id = parser.data.get_ident_id("bar").unwrap();
+        let Some(&Expr::FunDef { body: bar_body, .. }) = parser.exprs.iter().find(|e| matches!(e, Expr::FunDef {name, ..} if parser.get_ident(*name) == "bar")) else {
             unreachable!("no bar fun");
         };
         // let bar_first_stmt = ;
         let_assert_matches!(
-            parser.extra.slice_of(bar_body, &parser.exprs),
-            &[Expr::FunCall { name, args }]
+            parser.extra.iter_of(bar_body, &parser.exprs).next(),
+            Some( &Expr::FunCall { name, args } )
         );
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
-        dbg!(args);
-        assert_matches!(parser.extra.slice_of(args, &parser.exprs), &[Expr::Int(_)]);
+        assert_matches!(parser.extra.iter_of(args, &parser.exprs).next(), Some( Expr::Int(_) ));
     }
 
     #[test]

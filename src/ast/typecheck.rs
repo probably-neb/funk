@@ -34,6 +34,9 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
             Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => {
                 anyhow::bail!("top level literal not valid. malformed AST")
             }
+            Expr::Return {..} => {
+                anyhow::bail!("return outside of function")
+            }
             Expr::Binop { op, lhs, rhs } => {
                 check_binop(
                     &ctx, op, lhs, rhs,
@@ -46,14 +49,14 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
 
                 *i += 1;
                 let args_slice = extra.slice(args);
-                for &arg in extra.fun_args_slice(args) {
+                for &arg in args_slice {
                     assert!(exprs[*i] == FunArg, "expected fun arg");
                     scopes.locals.bind(arg as usize, *i);
                     *i += 1;
                     types[*i] = Type::Unknown;
                 }
                 debug_assert_eq!(*i, extra.slice(body).first().map(|&n| n as usize).unwrap_or(*i));
-                let res_type =
+                let (res_type, _) =
                     check_block(&ctx, body)?;
                 scopes.locals.clear();
                 let ret_type = &mut types[fun_i];
@@ -75,15 +78,23 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReturnPath {
+    Naked,
+    Gib,
+    Return,
+}
+
 fn check_block(
     ctx: &Ctx<'_>,
     block_i: XIndex,
-) -> Result<Type> {
+) -> Result<(Type, ReturnPath)> {
     let Ctx { exprs, types, cursor, scopes, extra, ..} = ctx.clone();
     scopes.locals.start_subscope();
 
+    let mut ret_path = ReturnPath::Naked;
     let mut ret_type = Type::Unknown;
-    for (expr_i, &expr) in extra.enumerated_slice_of(block_i, exprs) {
+    for (expr_i, &expr) in extra.indexed_iter_of(block_i, exprs) {
 
         // TODO: switch to check for statements,
         // call check_expr in else branch
@@ -134,7 +145,19 @@ fn check_block(
                     anyhow::bail!("mismatched types in if branches");
                 }
 
-                ret_type = branch_true_type;
+                ret_type = branch_true_type.0;
+            }
+            Return {value} => {
+                // FIXME: give ptr to ret type as param to this function
+                // so nested returns can check against it
+                ret_type = match value {
+                    Some(value) => check_expr(ctx, value.into())?,
+                    None => Type::Void,
+                };
+                ret_path = ReturnPath::Return;
+                // TODO: consider stopping typechecking past this point
+                // note - this will require figuring out the last node
+                // and marking it as visited despite not being checked
             }
             Expr::Bind { .. } => todo!("bind"),
             Expr::FunCall { name, args } => {
@@ -149,7 +172,7 @@ fn check_block(
         ret_type = Type::Void;
     }
     scopes.locals.end_subscope();
-    return Ok(ret_type);
+    return Ok((ret_type, ret_path));
 }
 
 fn check_expr(
@@ -175,6 +198,7 @@ fn check_expr(
         }
         Expr::FunDef { .. } => todo!("fun def"),
         Expr::FunArg => anyhow::bail!("expected expr found fun arg"),
+        Expr::Return {..} => anyhow::bail!("return not an expression"),
     }
 }
 

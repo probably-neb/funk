@@ -33,10 +33,13 @@ pub enum Token {
     Else,
     Fun,
     Let,
+    Return,
     Colon,
     Comma,
+    Pipe,
 }
 
+#[derive(Clone)]
 pub struct Lexer<'a> {
     position: usize,
     read_position: usize,
@@ -51,6 +54,7 @@ static KEYWORDS: phf::Map<&'static [u8], Token> = phf_map! {
     b"else" => Token::Else,
     b"fun" => Token::Fun,
     b"let" => Token::Let,
+    b"return" => Token::Return,
 };
 
 impl<'a> Lexer<'a> {
@@ -207,6 +211,7 @@ impl<'a> Lexer<'a> {
             b'<' => if_peek!(b'=', Token::LtEq, Token::Lt),
             b'>' => if_peek!(b'=', Token::GtEq, Token::Gt),
             b'=' => if_peek!(b'=', Token::DblEq, Token::Eq),
+            b'|' => if_peek!(b'>', Token::Pipe, unreachable!()),
             b'-' => Token::Minus,
             b'(' => Token::LParen,
             b')' => Token::RParen,

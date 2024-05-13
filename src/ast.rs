@@ -3,7 +3,7 @@ pub mod typecheck;
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
-    hash::{Hash, Hasher},
+    hash::{Hash, Hasher}, num::NonZeroUsize,
 };
 
 use crate::parser::{self, XIndex};
@@ -96,6 +96,9 @@ pub enum Expr {
         name: DIndex,
         value: EIndex,
     },
+    Return {
+        value: Option<NonZeroUsize>
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
@@ -112,6 +115,7 @@ pub type RefIdent = Option<EIndex>;
 // by hashing the byte slice and using the resulting u64
 // as the key
 // prevents needing lifetimes everywhere
+#[derive(Clone)]
 struct ByteHashMap {
     map: HashMap<u64, DIndex>,
 }
@@ -143,6 +147,7 @@ type Pool = Vec<u8>;
 
 pub type DIndex = usize;
 
+#[derive(Clone)]
 pub struct DataPool {
     pool: Pool,
     tmp: Vec<u8>,
@@ -164,6 +169,11 @@ impl DataPool {
     }
 
     pub fn put<T: WriteBytes + ?Sized + Hash>(&mut self, val: &T) -> DIndex {
+        // WARN: this puts the len of slices in `tmp` as well making it harder
+        // making the write longer and harder to get the ID of a string
+        // has the consequence we need write to a tmp buffer when getting the ID
+        // where the tmp must be allocated so a mutable reference to self is not
+        // required (could also use unsaafe)
         WriteBytes::write(val, &mut self.tmp);
         if let Some(i) = self.map.get(&self.tmp) {
             self.tmp.clear();
@@ -175,8 +185,10 @@ impl DataPool {
         return i;
     }
 
-    pub fn get_id(&self, val: &[u8]) -> Option<DIndex> {
-        return self.map.get(val);
+    pub fn get_ident_id(&self, val: &str) -> Option<DIndex> {
+        let mut tmp = Vec::with_capacity(val.len() + 4);
+        WriteBytes::write(&val, &mut tmp);
+        return self.map.get(&tmp);
     }
 
     pub fn get<T: ReadFromBytes>(&self, i: DIndex) -> T {
@@ -264,6 +276,7 @@ impl<'a> ReadFromBytesRef<'a> for [u8] {
 
 type ExtraData = u32;
 
+#[derive(Clone)]
 pub struct Extra {
     pub data: Vec<ExtraData>,
 }
@@ -304,29 +317,46 @@ impl Extra {
     }
 
     pub fn slice(&self, i: usize) -> &[ExtraData] {
-        return self.slice_of(i, &self.data);
-    }
-
-    pub fn len_of(&self, i: usize) -> usize {
-        return self.data[i] as usize;
-    }
-
-    pub fn enumerated_slice_of<'a, T>(&self, i: usize, items: &'a [T]) -> impl Iterator<Item = (usize, &'a T)> {
-        let len = self.data[i] as usize;
-        let start = i + 1;
-        let end = start + len;
-        return (start..end).zip(&items[start..end]);
-    }
-
-    pub fn slice_of<'a, T>(&'a self, i: usize, items: &'a [T]) -> &[T] {
         let len = self.data[i] as usize;
         let start = i + 1;
         if start == self.data.len() {
             return &[];
         }
         let end = start + len;
-        return &items[start..end];
+        return &self.data[start..end];
     }
+
+    pub fn len_of(&self, i: usize) -> usize {
+        return self.data[i] as usize;
+    }
+
+    /// Like `iter_of` but gives the index the item was found at as well
+    pub fn indexed_iter_of<'a, T>(&'a self, i: usize, items: &'a [T]) -> impl Iterator<Item = (usize, &'a T)> + 'a {
+        return self.iter(i).map(|i| {
+            let i = i as usize;
+            (i, &items[i])
+        });
+    }
+
+    pub fn iter<'a>(&'a self, i: usize) -> impl Iterator<Item = ExtraData> + 'a {
+        let len = self.data[i] as usize;
+        let start = i + 1;
+        let end = start + len;
+        return (start..end).map(|i| self.data[i]);
+    }
+
+    pub fn iter_of<'a, T>(&'a self, i: usize, items: &'a [T]) -> impl Iterator<Item = &'a T> + 'a {
+        return self.iter(i).map(|i| &items[i as usize]);
+    }
+
+    pub fn first_of(&self, i: usize) -> ExtraData {
+        return self.data[i + 1];
+    }
+
+    pub fn last_of(&self, i: usize) -> ExtraData {
+        return self.data[i + self.data[i] as usize];
+    }
+
     pub fn fun_args_slice(&self, i: XIndex) -> &[u32] {
         return self.get::<ExtraFunArgs>(i).args;
     }
