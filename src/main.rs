@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     let mut compiler = compiler::Compiler::new(ast);
     compiler.compile();
     let bytecode = compiler.bytecode();
-    dbg!(bytecode);
+    // dbg!(bytecode);
     let stack = rt::run(bytecode)?;
     dbg!(stack);
     Ok(())
