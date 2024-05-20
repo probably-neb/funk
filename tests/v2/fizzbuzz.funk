@@ -1,0 +1,19 @@
+fun fizzbuzz(n int) {
+    let i int = 0
+    while (<= i n) {
+        let divByThree bool = (== 0 (% i 3))
+        let divByFive bool = (== 0 (% i 5))
+        if (and divByThree divByFive) {
+            print("FizzBuzz")
+        } else if divByThree {
+            print("Fizz")
+        } else if divByFive {
+            print("Buzz")
+        } else {
+            print(i)
+        }
+        i = (+ i 1)
+    }
+}
+
+fizzbuzz(100)

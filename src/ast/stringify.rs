@@ -48,7 +48,7 @@ impl<T: std::fmt::Display> TreeNode<T> {
 
     // Print the tree
     fn print(&self, prefix: String, is_last: bool) {
-        println!(
+        eprintln!(
             "{}{}{}",
             prefix,
             if is_last { "└─ " } else { "├─ " },
@@ -152,10 +152,8 @@ fn expr_into_treenode(expr_i: usize, ast: &Ast, visited: &mut usize) -> TreeNode
             // mark_visited(visited, i + 1);
             node.add_node(body_node);
         }
-        Expr::Bind { name, value } => {
-            let name = expr_into_treenode(name, ast, visited);
+        Expr::Bind { value, .. } => {
             let value = expr_into_treenode(value, ast, visited);
-            node.add_node(name);
             node.add_node(value);
         }
         Expr::Return {value} => {
@@ -181,10 +179,8 @@ fn expr_into_treenode(expr_i: usize, ast: &Ast, visited: &mut usize) -> TreeNode
             node.add_node(body_node);
             mark_visited(visited, last);
         },
-        Expr::Assign {name, value} => {
-            let name = expr_into_treenode(name, ast, visited);
+        Expr::Assign {value, ..} => {
             let value = expr_into_treenode(value, ast, visited);
-            node.add_node(name);
             node.add_node(value);
         }
         Expr::Print {value} => {
@@ -204,13 +200,13 @@ fn repr_expr(expr: Expr, ast: &Ast) -> String {
         Expr::FunDef { name, .. } => format!("Fun {}", ast.get_ident(name)),
         Expr::FunCall { name, .. } => format!("Call {}", ast.get_ident(name)),
         Expr::Ident(i) => format!("Ident {}", ast.get_ident(i)),
-        Expr::String(i) => format!("Str \"{}\"", ast.get_ident(i)),
+        Expr::String(i) => format!("String \"{}\"", ast.get_ident(i)),
         Expr::Bool(value) => format!("Bool {}", value),
         Expr::Return{..} => format!("Return"),
         Expr::Bind { name, .. } => format!("let {}", ast.get_ident(name)),
+        Expr::Assign { name, .. } => format!("assign {}", ast.get_ident(name)),
         Expr::FunArg => unreachable!("tried to format fun arg"),
         Expr::While {..} => "While".to_string(),
-        Expr::Assign { .. } => "Assign".to_string(),
         Expr::Print { .. } => "Print".to_string(),
     }
 }

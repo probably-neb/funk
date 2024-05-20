@@ -208,7 +208,9 @@ impl<'a> Parser<'a> {
                 Ok(i)
             }
             Token::String(range) => {
-                let expr = Expr::String(self.intern_str(range));
+                let d_i = self.intern_str(range);
+                dbg!((range, self.data.get_ref::<str>(d_i)));
+                let expr = Expr::String(d_i);
                 let i = self.push_typed(expr, ast::Type::String);
                 Ok(i)
             }

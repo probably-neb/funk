@@ -365,8 +365,12 @@ impl Extra {
         return self.data[i + 1];
     }
 
-    pub fn last_of(&self, i: usize) -> ExtraData {
-        return self.data[i + self.data[i] as usize];
+    pub fn last_of(&self, i: usize) -> Option<ExtraData> {
+        let len = self.data[i] as usize;
+        if len == 0 {
+            return None;
+        }
+        return Some(self.data[i + len]);
     }
 
     pub fn fun_args_slice(&self, i: XIndex) -> &[u32] {

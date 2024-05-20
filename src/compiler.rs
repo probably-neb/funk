@@ -23,6 +23,10 @@ pub enum ByteCode {
     LtEq,
     Gt,
     GtEq,
+    Not,
+    Mod,
+    And,
+    Print,
 }
 
 impl From<Binop> for ByteCode {
@@ -37,8 +41,8 @@ impl From<Binop> for ByteCode {
             Binop::LtEq => ByteCode::LtEq,
             Binop::Gt => ByteCode::Gt,
             Binop::GtEq => ByteCode::GtEq,
-            Binop::And => unimplemented!("and not implemented"),
-            Binop::Mod => unimplemented!("mod not implemented"),
+            Binop::Mod => ByteCode::Mod,
+            Binop::And => ByteCode::And,
         }
     }
 }
@@ -46,6 +50,7 @@ impl From<Binop> for ByteCode {
 #[derive(Debug)]
 pub struct Chunk {
     pub ops: Vec<ByteCode>,
+    pub data: Vec<u8>,
 }
 
 pub struct Compiler {
@@ -62,7 +67,10 @@ impl Compiler {
         let visited = vec![false; ast.exprs.len()];
         Self {
             ast,
-            bytecode: Chunk { ops: Vec::new() },
+            bytecode: Chunk {
+                ops: Vec::new(),
+                data: Vec::new(),
+            },
             expr_i: 0,
             visited,
             scope_stack: ScopeStack::new(),
@@ -111,7 +119,7 @@ impl Compiler {
                 self.compile_binop(op, lhs, rhs);
             }
             Expr::Bool(b) => {
-                self.emit(ByteCode::Push(if b {1} else {0}));
+                self.emit(ByteCode::Push(if b { 1 } else { 0 }));
             }
             Expr::If {
                 cond,
@@ -126,6 +134,13 @@ impl Compiler {
             Expr::Ident(name) => {
                 self.compile_load(name).expect("compile load failed");
             }
+            Expr::String(value) => {
+                let data = self.ast.data.get_ref::<[u8]>(value);
+                let data_i = self.bytecode.data.len() as u64;
+                self.bytecode.data.extend_from_slice(data);
+                self.bytecode.data.push(0);
+                self.emit(ByteCode::Push(data_i));
+            }
             Expr::FunDef { name, args, body } => {
                 self.compile_fundef(name, args, body);
             }
@@ -133,17 +148,45 @@ impl Compiler {
                 self.compile_fun_call(name, args)
                     .expect("compile fun call failed");
             }
-            Expr::Return {value} => {
-                match value {
-                    Some(value) => {
-                        self.compile_expr(usize::from(value));
-                        self.emit(ByteCode::Ret);
-                    },
-                    None => {
-                        self.emit(ByteCode::Push(0));
-                        self.emit(ByteCode::Ret);
-                    }
+            Expr::Return { value } => match value {
+                Some(value) => {
+                    self.compile_expr(usize::from(value));
+                    self.emit(ByteCode::Ret);
                 }
+                None => {
+                    self.emit(ByteCode::Push(0));
+                    self.emit(ByteCode::Ret);
+                }
+            },
+            Expr::While { cond, body } => {
+                self.compile_expr(cond);
+                self.emit(ByteCode::Push(0));
+                self.emit(ByteCode::Not);
+                let jmp_start = self.init_jmp();
+
+                let while_body_start = self.current_offset();
+                self.compile_block(body);
+
+                self.compile_expr(cond);
+                self.emit(ByteCode::JumpIfZero(while_body_start as u32));
+                self.end_jmp_if_zero(jmp_start)
+            }
+            Expr::Print { value } => {
+                self.compile_expr(value);
+                let type_code = match self.ast.types[value] {
+                    crate::ast::Type::UInt64 => Type::Int,
+                    crate::ast::Type::Bool => Type::Bool,
+                    crate::ast::Type::String => Type::String,
+                    crate::ast::Type::Void => unreachable!("void type"),
+                    crate::ast::Type::Unknown => unreachable!("unknown type"),
+                };
+                self.emit(ByteCode::Push(type_code.as_immediate()));
+                self.emit(ByteCode::Print);
+            }
+            Expr::Assign { name, value } => {
+                self.compile_expr(value);
+                let i = self.scope_stack.get(name).expect("variable not found");
+                self.emit(ByteCode::Store(i));
             }
             _ => unimplemented!("Expr: {:?} not implemented", expr),
         }
@@ -181,17 +224,16 @@ impl Compiler {
     }
 
     fn compile_block(&mut self, block: XIndex) {
-        self.scope_stack.start_subscope();
         let exprs = self.ast.extra.slice(block);
         for expr_i in exprs {
             crate::utils::steal!(Self, self).compile_expr(*expr_i as usize);
         }
-        self.scope_stack.end_subscope();
     }
 
     fn compile_bind(&mut self, name: DIndex, value: EIndex) {
         self.compile_expr(value);
-        self.scope_stack.bind_local(name);
+        let i = self.scope_stack.get(name).expect("variable not found");
+        self.emit(ByteCode::Store(i));
     }
 
     fn compile_load(&mut self, name: DIndex) -> Result<()> {
@@ -199,6 +241,7 @@ impl Compiler {
             let name = self.ast.data.get_ref::<str>(name);
             format!("variable not found: {}", name)
         })?;
+        dbg!((self.ast.data.get_ref::<str>(name), ":=", i));
         self.emit(ByteCode::Load(i));
         Ok(())
     }
@@ -251,8 +294,9 @@ impl Compiler {
         self.fun_map.add(name, self.current_offset() as u32, args);
         self.scope_stack.start_new();
         self.bind_fun_args(args);
-        self.scope_stack.skip::<2>();
+        self.allocate_locals(body);
         self.compile_block(body);
+        self.emit(ByteCode::Ret);
         self.end_jmp(start);
         self.scope_stack.end();
     }
@@ -269,6 +313,77 @@ impl Compiler {
             let Some(Expr::FunArg) = self.next_expr() else {
                 unreachable!("expected fun arg");
             };
+        }
+    }
+
+    fn allocate_locals(&mut self, body: XIndex) {
+        let body_exprs = self.ast.extra.slice(body);
+        if body_exprs.is_empty() {
+            return;
+        }
+        let first = *body_exprs.first().expect("first") as usize;
+        let mut last = *body_exprs.last().expect("last") as usize;
+        loop {
+            let last_expr = self.ast.exprs[last];
+            match last_expr {
+                Expr::Nop | Expr::Bool(_) | Expr::Int(_) | Expr::String(_) | Expr::Ident(_) => {
+                    break;
+                }
+                Expr::Bind { value, .. } | Expr::Assign { value, .. } | Expr::Print { value } => {
+                    last = value;
+                }
+                Expr::If {
+                    cond,
+                    branch_then,
+                    branch_else,
+                } => {
+                    last = self
+                        .ast
+                        .extra
+                        .last_of(branch_else)
+                        .map(|x| x as usize)
+                        .unwrap_or_else(|| {
+                            self.ast
+                                .extra
+                                .last_of(branch_then)
+                                .map(|x| x as usize)
+                                .unwrap_or(cond)
+                        });
+                }
+                Expr::Binop { rhs, .. } => last = rhs,
+                Expr::FunCall { args, .. } => {
+                    last = self
+                        .ast
+                        .extra
+                        .last_of(args)
+                        .map(|x| x as usize)
+                        .unwrap_or(last);
+                }
+                Expr::Return { value } => {
+                    if let Some(value) = value {
+                        last = usize::from(value);
+                    } else {
+                        break;
+                    }
+                }
+                Expr::While { cond, body } => {
+                    last = self
+                        .ast
+                        .extra
+                        .last_of(body)
+                        .map(|x| x as usize)
+                        .unwrap_or(cond);
+                }
+                Expr::FunArg => unreachable!("fun arg"),
+                Expr::FunDef { .. } => unreachable!("function definition in block"),
+            }
+        }
+        for i in first..=last {
+            let Expr::Bind {name, ..} = self.ast.exprs[i] else {
+                continue;
+            };
+            self.scope_stack.bind_local(name);
+            self.emit(ByteCode::Push(0));
         }
     }
 
@@ -290,8 +405,26 @@ impl Compiler {
         }
         self.emit(ByteCode::Push(num_args as u64));
         self.emit(ByteCode::Call(fun_offset));
-        self.scope_stack.skip::<1>();
         Ok(())
+    }
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub enum Type {
+    Int,
+    Bool,
+    String
+}
+
+impl Type {
+    pub fn as_immediate(&self) -> u64 {
+        *self as u64
+    }
+
+    pub fn from_bc(bc: i64) -> Self {
+        let lut = [Self::Int, Self::Bool, Self::String];
+        return lut[bc as usize];
     }
 }
 
@@ -312,16 +445,19 @@ impl ScopeStack {
         }
     }
 
+    // TODO: remove
     fn skip<const N: usize>(&mut self) {
         let vals = [Self::NOT_BOUND; N];
         self.stack_map.extend(vals);
     }
 
     /// like start_new but does not set `cur`
+    // TODO: remove
     fn start_subscope(&mut self) {
         self.starts.push(self.stack_map.len());
     }
 
+    // TODO: remove
     fn end_subscope(&mut self) {
         let start = self.starts.pop().expect("no starts");
         self.stack_map.truncate(start);
@@ -346,18 +482,21 @@ impl ScopeStack {
         return (i - self.cur) as u32;
     }
 
+    // [ 0 1 2 3 4]
     fn get(&self, name: DIndex) -> Option<u32> {
         debug_assert_ne!(name, Self::NOT_BOUND);
         let pos = self.stack_map.iter().rev().position(|&n| n == name);
         let Some(pos) = pos else {
             return None;
         };
+        let pos = self.stack_map.len() - pos - 1;
         if pos < self.cur {
             unimplemented!("globals not implemented");
         }
         return Some((pos - self.cur) as u32);
     }
 
+    // TODO: remove
     fn is_last(&self, i: u32) -> bool {
         let i = self.cur + i as usize;
         let len = self.stack_map.len();
@@ -470,16 +609,7 @@ mod tests {
 
     #[test]
     fn nested_add_lhs() {
-        assert_compiles_to!(
-            "( + ( + 1 2 ) 3 )",
-            [
-                Push(1),
-                Push(2),
-                Add,
-                Push(3),
-                Add
-            ]
-        );
+        assert_compiles_to!("( + ( + 1 2 ) 3 )", [Push(1), Push(2), Add, Push(3), Add]);
     }
 
     #[test]

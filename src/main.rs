@@ -14,11 +14,12 @@ fn main() -> Result<()> {
     let contents = std::fs::read_to_string(file)?;
     let parser = parser::Parser::new(&contents);
     let mut ast = parser.parse()?;
+    ast::stringify::print_tree(&ast);
     ast::typecheck::typecheck(&mut ast)?;
     let mut compiler = compiler::Compiler::new(ast);
     compiler.compile();
     let bytecode = compiler.bytecode();
-    // dbg!(bytecode);
+    dbg!(bytecode);
     let stack = rt::run(bytecode)?;
     dbg!(stack);
     Ok(())
