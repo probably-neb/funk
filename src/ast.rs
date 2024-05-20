@@ -96,6 +96,10 @@ pub enum Expr {
         name: DIndex,
         value: EIndex,
     },
+    Assign {
+        name: DIndex,
+        value: EIndex,
+    },
     Return {
         value: Option<NonZeroUsize>
     },
@@ -103,6 +107,9 @@ pub enum Expr {
     While {
         cond: EIndex,
         body: XIndex,
+    },
+    Print {
+        value: EIndex,
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

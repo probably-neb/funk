@@ -72,7 +72,6 @@ impl<'a> Parser<'a> {
         Parser::_new(Lexer::new(contents))
     }
 
-
     pub fn ast(self) -> Ast {
         Ast::new(self.exprs, self.data, self.extra, self.types)
     }
@@ -185,6 +184,15 @@ impl<'a> Parser<'a> {
                 let str = self.intern_str(range);
                 if let Some(Token::LParen) = self.peek_tok() {
                     self.fun_call(str)
+                } else if let Some(Token::Eq) = self.peek_tok() {
+                    self.next_tok().expect("expected Eq");
+                    let assign_i = self.reserve();
+                    let expr_i = self.expr()?.expect("expected expr");
+                    self.exprs[assign_i] = Expr::Assign {
+                        name: str,
+                        value: expr_i,
+                    };
+                    Ok(assign_i)
                 } else {
                     let ident = Expr::Ident(str);
                     let i = self.push_typed(ident, ast::Type::Unknown);
@@ -209,16 +217,36 @@ impl<'a> Parser<'a> {
                     return Some(Err(anyhow!("expected expr after return")));
                 };
                 let value = core::num::NonZeroUsize::new(expr);
-                let i = self.push(Expr::Return{ value });
+                let i = self.push(Expr::Return { value });
                 Ok(i)
             }
             Token::If => self.if_expr(),
             Token::Fun => self.fun_expr(),
             Token::Let => self.bind_expr(),
             Token::While => self.while_expr(),
-            Token::LParen => Binop::try_from(self.next_tok()?).and_then(|op| self.binop_expr(op)),
+            Token::LParen => Binop::try_from(self.next_tok()?)
+                .and_then(|op| self.binop_expr(op))
+                .with_context(|| {
+                    self.tok()
+                        .map(|tok| match tok {
+                            Token::Ident(range) => {
+                                format!("expected binop got ident {:?}", self.lxr.as_str(&range))
+                            }
+                            _ => format!("expected binop got {:?}", tok),
+                        })
+                        .unwrap_or_else(|| "expected binop got EOF".to_string())
+                }),
+            Token::Print => {
+                eat!(self, Token::LParen, "print expects arguments");
+                let Ok(expr) = self.expr()? else {
+                    return Some(Err(anyhow!("expected expr after print")));
+                };
+                eat!(self, Token::RParen, "print expects RParen");
+                let i = self.push(Expr::Print { value: expr });
+                Ok(i)
+            }
             _ => {
-                unimplemented!("{:?} not implemented", tok)
+                unimplemented!("{:?} not implemented\nexprs={:?}", tok, self.exprs.iter().enumerate().collect::<Vec<_>>())
             }
         };
         return Some(res);
@@ -346,11 +374,14 @@ impl<'a> Parser<'a> {
             .with_context(|| format!("expected {{ got {:?}", self.tok()))?;
 
         let mut exprs = Vec::new();
-        while let Some(expr) = self.expr() {
-            exprs.push(expr? as u32);
+        loop {
             if let Some(Token::RSquirly) = self.peek_tok() {
                 break;
             }
+            let Some(expr) = self.expr() else {
+                return Err(anyhow!("expected expr in block"));
+            };
+            exprs.push(expr? as u32);
         }
         eat!(self, Token::RSquirly, "block").with_context(|| "block err")?;
         return Ok(self.extra.concat(&exprs));
@@ -412,7 +443,7 @@ impl<'a> Parser<'a> {
         let name = self.intern_str(range);
 
         let Some(Token::Eq) = self.next_tok() else {
-            anyhow::bail!("expected `=` in bind expr");
+            anyhow::bail!("expected `=` in bind expr, got {:?}", self.tok());
         };
         let value = self.expr().expect("no value in bind expr")?;
 
@@ -432,7 +463,9 @@ impl<'a> Parser<'a> {
             b"int" => ast::Type::UInt64,
             b"str" => ast::Type::String,
             b"bool" => ast::Type::Bool,
-            _ => anyhow::bail!("unknown type {:?}", unsafe { std::str::from_utf8_unchecked(type_name)}),
+            _ => anyhow::bail!("unknown type {:?}", unsafe {
+                std::str::from_utf8_unchecked(type_name)
+            }),
         });
     }
 
@@ -468,6 +501,8 @@ pub enum Binop {
     LtEq,
     Gt,
     GtEq,
+    Mod,
+    And,
 }
 
 impl TryFrom<Token> for Binop {
@@ -483,6 +518,8 @@ impl TryFrom<Token> for Binop {
             Token::LtEq => Binop::LtEq,
             Token::Gt => Binop::Gt,
             Token::GtEq => Binop::GtEq,
+            Token::Mod => Binop::Mod,
+            Token::And => Binop::And,
             _ => return Err(anyhow!("invalid binop: {:?}", value)),
         })
     }
@@ -652,7 +689,7 @@ pub mod tests {
         );
         assert_matches!(
             parser.extra.iter_of(branch_else, &parser.exprs).next(),
-            Some( Expr::String(_) )
+            Some(Expr::String(_))
         );
     }
 
@@ -672,11 +709,11 @@ pub mod tests {
         let_assert_matches!(parser.exprs[cond], Expr::Binop { op: _, lhs, rhs });
         assert_matches!(
             parser.extra.iter_of(branch_then, &parser.types).next(),
-            Some( ast::Type::String )
+            Some(ast::Type::String)
         );
         assert_matches!(
             parser.extra.iter_of(branch_then, &parser.types).next(),
-            Some( ast::Type::String )
+            Some(ast::Type::String)
         );
 
         assert_eq!(parser.types[lhs], ast::Type::UInt64);
@@ -691,13 +728,15 @@ pub mod tests {
         let body = parser.extra.slice(body);
         let_assert_matches!(
             parser.exprs[body[0] as usize],
-            Expr::Return {
-                value: Some(value)
-            }
+            Expr::Return { value: Some(value) }
         );
         assert_matches!(
             parser.exprs[usize::from(value)],
-            Expr::Binop { op: Binop::Add, lhs, rhs }
+            Expr::Binop {
+                op: Binop::Add,
+                lhs,
+                rhs
+            }
         );
     }
 
@@ -735,7 +774,7 @@ pub mod tests {
         let contents = "foo(0, 1, 2, 3)";
         let parser = parse(contents).expect("parser error");
 
-        let Expr::FunCall { name, args} = parser.exprs[0] else {
+        let Expr::FunCall { name, args } = parser.exprs[0] else {
             unreachable!();
         };
         let args = parser.extra.slice(args);
@@ -817,7 +856,7 @@ pub mod tests {
         let parser = parse(contents).expect("parser error");
         let_assert_matches!(parser.exprs[0], Expr::FunCall { name, args });
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
-        let Some(Expr::Binop { ..}) = parser.extra.iter_of(args, &parser.exprs).next() else {
+        let Some(Expr::Binop { .. }) = parser.extra.iter_of(args, &parser.exprs).next() else {
             unreachable!();
         };
     }
@@ -926,16 +965,23 @@ pub mod tests {
         //     ast.print();
         // };
         let bar_id = parser.data.get_ident_id("bar").unwrap();
-        let Some(&Expr::FunDef { body: bar_body, .. }) = parser.exprs.iter().find(|e| matches!(e, Expr::FunDef {name, ..} if parser.get_ident(*name) == "bar")) else {
+        let Some(&Expr::FunDef { body: bar_body, .. }) = parser
+            .exprs
+            .iter()
+            .find(|e| matches!(e, Expr::FunDef {name, ..} if parser.get_ident(*name) == "bar"))
+        else {
             unreachable!("no bar fun");
         };
         // let bar_first_stmt = ;
         let_assert_matches!(
             parser.extra.iter_of(bar_body, &parser.exprs).next(),
-            Some( &Expr::FunCall { name, args } )
+            Some(&Expr::FunCall { name, args })
         );
         assert_eq!(parser.data.get_ref::<str>(name), "foo");
-        assert_matches!(parser.extra.iter_of(args, &parser.exprs).next(), Some( Expr::Int(_) ));
+        assert_matches!(
+            parser.extra.iter_of(args, &parser.exprs).next(),
+            Some(Expr::Int(_))
+        );
     }
 
     #[test]

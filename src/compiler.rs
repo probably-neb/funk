@@ -37,6 +37,8 @@ impl From<Binop> for ByteCode {
             Binop::LtEq => ByteCode::LtEq,
             Binop::Gt => ByteCode::Gt,
             Binop::GtEq => ByteCode::GtEq,
+            Binop::And => unimplemented!("and not implemented"),
+            Binop::Mod => unimplemented!("mod not implemented"),
         }
     }
 }

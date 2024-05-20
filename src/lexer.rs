@@ -20,6 +20,8 @@ pub enum Token {
     Minus,
     Mul,
     Div,
+    Mod,
+    And,
     LParen,
     RParen,
     LSquirly,
@@ -38,6 +40,7 @@ pub enum Token {
     Comma,
     Pipe,
     While,
+    Print,
 }
 
 #[derive(Clone)]
@@ -57,6 +60,8 @@ static KEYWORDS: phf::Map<&'static [u8], Token> = phf_map! {
     b"let" => Token::Let,
     b"return" => Token::Return,
     b"while" => Token::While,
+    b"and" => Token::And,
+    b"print" => Token::Print,
 };
 
 impl<'a> Lexer<'a> {
@@ -226,6 +231,7 @@ impl<'a> Lexer<'a> {
             b'/' => Token::Div,
             b':' => Token::Colon,
             b',' => Token::Comma,
+            b'%' => Token::Mod,
             _ => unreachable!("unrecognized punct {}", self.ch as char),
         }
     }

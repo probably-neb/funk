@@ -22,6 +22,7 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
             extra: &ast.extra,
             cursor: &mut i,
             scopes: &mut scopes,
+            data: &ast.data,
         };
 
         // TODO: switch to check for statements,
@@ -115,6 +116,21 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                 check_funcall(&ctx, name, args)?;
             }
             Expr::FunArg => anyhow::bail!("expected top level node found fun arg"),
+            Expr::Assign { name, value } => {
+                let ref_i = ctx.scopes.module.globals.find(name).with_context(|| "unbound identifier")?;
+                let ty = check_expr(&ctx, value)?;
+                if ty != ctx.types[ref_i] {
+                    anyhow::bail!("mismatched types in assignment");
+                }
+                ctx.types[expr_i] = ty;
+            },
+            Expr::Print { value } => {
+                let ty = check_expr(&ctx, value)?;
+                if ty != Type::String {
+                    anyhow::bail!("expected string in print");
+                }
+                ctx.types[expr_i] = Type::Void;
+            }
         }
         i += 1;
     }
@@ -201,7 +217,20 @@ fn check_block(ctx: &Ctx<'_>, block_i: XIndex) -> Result<(Type, ReturnPath)> {
                 // note - this will require figuring out the last node
                 // and marking it as visited despite not being checked
             }
-            Expr::Bind { .. } => todo!("bind"),
+            Expr::Bind { name, value } => {
+                let annotated_ty = types[expr_i];
+                let expr_ty = check_expr(ctx, value)?;
+                if annotated_ty == Type::Unknown {
+                    if expr_ty == Type::Unknown {
+                        anyhow::bail!("cannot infer type of unannotated binding");
+                    }
+                    types[expr_i] = expr_ty;
+                } else if annotated_ty != expr_ty {
+                    anyhow::bail!("mismatched types in assignment");
+                }
+                types[expr_i] = expr_ty;
+                scopes.locals.bind(name, expr_i);
+            },
             Expr::FunCall { name, args } => {
                 ret_type = check_funcall(&ctx, name, args)?;
             }
@@ -212,6 +241,21 @@ fn check_block(ctx: &Ctx<'_>, block_i: XIndex) -> Result<(Type, ReturnPath)> {
                 anyhow::bail!("expected bool in while condition");
                 };
                 (ret_type, _) = check_block(ctx, body)?;
+            },
+            Expr::Assign { name, value } => {
+                let ref_i = scopes.locals.get(name).with_context(|| "unbound identifier")?;
+                let ty = check_expr(ctx, value)?;
+                if ty != types[ref_i] {
+                    anyhow::bail!("mismatched types in assignment");
+                }
+                types[expr_i] = ty;
+            },
+            Expr::Print { value } => {
+                let ty = check_expr(ctx, value)?;
+                if ty != Type::String {
+                    anyhow::bail!("expected string in print");
+                }
+                types[expr_i] = Type::Void;
             }
         }
         mark_visited(cursor, expr_i);
@@ -261,11 +305,19 @@ fn check_expr(ctx: &Ctx<'_>, expr_i: EIndex) -> Result<Type> {
                 }
                 Ok(branch_true_type.0)
         },
+        Expr::Print {value} => {
+            let ty = check_expr(ctx, value)?;
+            if ty != Type::String {
+                anyhow::bail!("expected string in print");
+            }
+            Ok(Type::Void)
+        },
         Expr::FunCall { name, args } => check_funcall(ctx, name, args),
         Expr::FunDef { .. } => todo!("fun def"),
         Expr::FunArg => anyhow::bail!("expected expr found fun arg"),
         Expr::Return { .. } => anyhow::bail!("return not an expression"),
         Expr::While {..} => anyhow::bail!("while not an expression"),
+        Expr::Assign { ..} => anyhow::bail!("assign not an expression"),
     }
 }
 
@@ -279,9 +331,13 @@ fn check_binop(ctx: &Ctx<'_>, op: ast::Binop, lhs_i: EIndex, rhs_i: EIndex) -> R
         anyhow::bail!("mismatched types in binop");
     }
     let binop_type = match op {
-        ast::Binop::Add | ast::Binop::Sub | ast::Binop::Mul | ast::Binop::Div => match lhs_type {
-            Type::UInt64 => Type::UInt64,
+        ast::Binop::Add | ast::Binop::Sub | ast::Binop::Mul | ast::Binop::Div | ast::Binop::Mod => match lhs_type {
+            Type::UInt64 => lhs_type,
             _ => anyhow::bail!("invalid type for arithmetic op"),
+        },
+        ast::Binop::And => match lhs_type {
+            Type::Bool => Type::Bool,
+            _ => anyhow::bail!("invalid type for logical op"),
         },
         ast::Binop::Eq => Type::Bool,
         ast::Binop::Lt | ast::Binop::Gt | ast::Binop::GtEq | ast::Binop::LtEq => match lhs_type {
@@ -300,13 +356,14 @@ fn check_funcall(ctx: &Ctx<'_>, name: DIndex, args: XIndex) -> Result<Type> {
         extra,
         cursor,
         scopes,
+        data,
         ..
     } = ctx.clone();
     let fun_i = scopes
         .module
         .functions
-        .find(name)
-        .with_context(|| "ruh roh raggiy")?;
+        .find(dbg!(name))
+        .with_context(|| format!("could not find function {}", data.get_ref::<str>(name)))?;
     let Expr::FunDef { args: params_i, .. } = exprs[fun_i] else {
         anyhow::bail!("expected fun def");
     };
@@ -337,6 +394,7 @@ struct Ctx<'a> {
     extra: &'a Extra,
     cursor: &'a mut usize,
     scopes: &'a mut Scopes,
+    data: &'a ast::DataPool,
 }
 
 impl Clone for Ctx<'_> {
@@ -348,6 +406,7 @@ impl Clone for Ctx<'_> {
             extra: self.extra,
             cursor: unsafe { &mut *(self.cursor as *const usize as *mut usize) },
             scopes: unsafe { &mut *(self.scopes as *const Scopes as *mut Scopes) },
+            data: self.data,
         }
     }
 }

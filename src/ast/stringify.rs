@@ -180,7 +180,16 @@ fn expr_into_treenode(expr_i: usize, ast: &Ast, visited: &mut usize) -> TreeNode
             }
             node.add_node(body_node);
             mark_visited(visited, last);
-                    
+        },
+        Expr::Assign {name, value} => {
+            let name = expr_into_treenode(name, ast, visited);
+            let value = expr_into_treenode(value, ast, visited);
+            node.add_node(name);
+            node.add_node(value);
+        }
+        Expr::Print {value} => {
+            let value = expr_into_treenode(value, ast, visited);
+            node.add_node(value);
         }
     }
     return node;
@@ -201,6 +210,8 @@ fn repr_expr(expr: Expr, ast: &Ast) -> String {
         Expr::Bind { name, .. } => format!("let {}", ast.get_ident(name)),
         Expr::FunArg => unreachable!("tried to format fun arg"),
         Expr::While {..} => "While".to_string(),
+        Expr::Assign { .. } => "Assign".to_string(),
+        Expr::Print { .. } => "Print".to_string(),
     }
 }
 
