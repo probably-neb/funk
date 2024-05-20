@@ -37,6 +37,7 @@ pub enum Token {
     Colon,
     Comma,
     Pipe,
+    While,
 }
 
 #[derive(Clone)]
@@ -55,6 +56,7 @@ static KEYWORDS: phf::Map<&'static [u8], Token> = phf_map! {
     b"fun" => Token::Fun,
     b"let" => Token::Let,
     b"return" => Token::Return,
+    b"while" => Token::While,
 };
 
 impl<'a> Lexer<'a> {

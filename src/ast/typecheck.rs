@@ -77,6 +77,12 @@ pub fn typecheck(ast: &mut Ast) -> Result<()> {
                 }
             }
             Expr::If {..} => todo!("if"),
+            Expr::While { cond, body } => {
+                let Type::Bool = check_expr(&ctx, cond)? else {
+                    anyhow::bail!("expected bool in while condition");
+                };
+                check_block(&ctx, body)?;
+            }
             // Expr::If {
             //     cond,
             //     branch_then: branch_true,
@@ -201,6 +207,12 @@ fn check_block(ctx: &Ctx<'_>, block_i: XIndex) -> Result<(Type, ReturnPath)> {
             }
             Expr::FunArg => anyhow::bail!("expected block level node found fun arg"),
             Expr::FunDef { .. } => anyhow::bail!("expected block level node found fun def"),
+            Expr::While { cond, body } => {
+                let Type::Bool = check_expr(ctx, cond)? else {
+                anyhow::bail!("expected bool in while condition");
+                };
+                (ret_type, _) = check_block(ctx, body)?;
+            }
         }
         mark_visited(cursor, expr_i);
     }
@@ -253,6 +265,7 @@ fn check_expr(ctx: &Ctx<'_>, expr_i: EIndex) -> Result<Type> {
         Expr::FunDef { .. } => todo!("fun def"),
         Expr::FunArg => anyhow::bail!("expected expr found fun arg"),
         Expr::Return { .. } => anyhow::bail!("return not an expression"),
+        Expr::While {..} => anyhow::bail!("while not an expression"),
     }
 }
 

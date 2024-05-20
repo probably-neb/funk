@@ -215,6 +215,7 @@ impl<'a> Parser<'a> {
             Token::If => self.if_expr(),
             Token::Fun => self.fun_expr(),
             Token::Let => self.bind_expr(),
+            Token::While => self.while_expr(),
             Token::LParen => Binop::try_from(self.next_tok()?).and_then(|op| self.binop_expr(op)),
             _ => {
                 unimplemented!("{:?} not implemented", tok)
@@ -292,6 +293,14 @@ impl<'a> Parser<'a> {
         eat!(self, Token::RParen, "binop")?;
         self.exprs[expr_i] = Expr::Binop { op, lhs, rhs };
         Ok(expr_i)
+    }
+
+    fn while_expr(&mut self) -> Result<EIndex> {
+        let while_i = self.reserve();
+        let cond = self.expr().unwrap()?;
+        let body = self.block()?;
+        self.exprs[while_i] = Expr::While { cond, body };
+        Ok(while_i)
     }
 
     fn if_expr(&mut self) -> Result<EIndex> {

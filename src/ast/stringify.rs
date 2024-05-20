@@ -165,6 +165,23 @@ fn expr_into_treenode(expr_i: usize, ast: &Ast, visited: &mut usize) -> TreeNode
             }
         }
         Expr::FunArg => unreachable!("fun arg"),
+        Expr::While { cond, body } => {
+            let mut cond_node = TreeNode::new("Cond".to_string());
+            let cond_expr_node = expr_into_treenode(cond, ast, visited);
+            cond_node.add_node(cond_expr_node);
+            node.add_node(cond_node);
+            mark_visited(visited, cond);
+            let mut body_node = TreeNode::new("Body".to_string());
+            let mut last = body;
+            for (i, &expr) in ast.extra.indexed_iter_of(body, &ast.exprs) {
+                let expr_node = expr_into_treenode(i, ast, visited);
+                body_node.add_node(expr_node);
+                last = usize::max(i + 1,*visited);
+            }
+            node.add_node(body_node);
+            mark_visited(visited, last);
+                    
+        }
     }
     return node;
 }
@@ -180,9 +197,10 @@ fn repr_expr(expr: Expr, ast: &Ast) -> String {
         Expr::Ident(i) => format!("Ident {}", ast.get_ident(i)),
         Expr::String(i) => format!("Str \"{}\"", ast.get_ident(i)),
         Expr::Bool(value) => format!("Bool {}", value),
-        Expr::Return{value} => format!("Return"),
+        Expr::Return{..} => format!("Return"),
         Expr::Bind { name, .. } => format!("let {}", ast.get_ident(name)),
         Expr::FunArg => unreachable!("tried to format fun arg"),
+        Expr::While {..} => "While".to_string(),
     }
 }
 

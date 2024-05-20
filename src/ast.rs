@@ -100,6 +100,10 @@ pub enum Expr {
         value: Option<NonZeroUsize>
     },
     Bool(bool),
+    While {
+        cond: EIndex,
+        body: XIndex,
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
